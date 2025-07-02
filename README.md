@@ -2,6 +2,10 @@
 
 [![Paper](https://img.shields.io/badge/Paper-Arxiv%20Link-green)](https://arxiv.org/abs/2506.20639)
 [![License](https://img.shields.io/badge/License-Apple-blue)](LICENSE)
+[![deploy](https://img.shields.io/badge/Hugging%20Face-DiffuCoder_Base-FFEB3B)](https://huggingface.co/apple/DiffuCoder-7B-Base)
+[![deploy](https://img.shields.io/badge/Hugging%20Face-DiffuCoder_Instruct-FFEB3B)](https://huggingface.co/apple/DiffuCoder-7B-Instruct)
+[![deploy](https://img.shields.io/badge/Hugging%20Face-DiffuCoder_cpGRPO-FFEB3B)](https://huggingface.co/apple/DiffuCoder-7B-cpGRPO)
+
 
 This software project accompanies the research paper, [DiffuCoder: Understanding and Improving Masked Diffusion Models for Code Generation](https://arxiv.org/abs/2506.20639).
 
@@ -98,6 +102,9 @@ cd ..
 bash run.sh 
 # in `run.sh`, we start e2b server locally, but you can also run on cpu clusters to serve it.
 ```
+
+### Inference
+The DiffuCoder models ([Base](https://huggingface.co/apple/DiffuCoder-7B-Base), [Instruct](https://huggingface.co/apple/DiffuCoder-7B-Instruct), and [cpGRPO](https://huggingface.co/apple/DiffuCoder-7B-cpGRPO)) are now available on HuggingFace. We'll be adding usage examples here shortly.
 
 ### Evaluation
 The diffusion inference algorithm is based on Dream-7B. The code evaluation is based on [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder/tree/main/qwencoder-eval).
