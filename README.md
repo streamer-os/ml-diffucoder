@@ -36,7 +36,7 @@ We train **DiffuCoder** using the adaptation approach in [DiffuLLaMA](https://gi
 
 - In dLLMs, changing the sampling temperature not only affects sampled tokens (as in AR models), but also alters the generation order itself. 
 
-For more interesting findings, please refer to our orginal paper!
+For more interesting findings, please refer to our original paper!
 
 We propose **Coupled-GRPO**, a post-training method to improve DiffuCoder's performance.
 
@@ -66,7 +66,7 @@ In this repository, we release our implementation of **Coupled-GRPO**, built upo
 │   ├── configs.py # with diffusion related params
 │   ├── coupled_grpo.py # inherits trl GRPOTrainer 
 │   ├── grpo.py # main training script
-│   ├── rewards.py # rewrite code reward and code_formar reward 
+│   ├── rewards.py # rewrite code reward and code_format reward 
 │   ├── utils/code_providers.py # rewrite pass rate extraction for E2B
 ├── recipes/process_data.py # prepare grpo training data
 ├── recipes/config_coupled_code.yaml # training config
@@ -109,7 +109,7 @@ The DiffuCoder models ([Base](https://huggingface.co/apple/DiffuCoder-7B-Base), 
 ### Evaluation
 The diffusion inference algorithm is based on Dream-7B. The code evaluation is based on [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder/tree/main/qwencoder-eval).
 
-## Acknowledge
+## Acknowledgments
 We sincerely appreciate the following works for DiffuCoder:
 - Our data used in pre-training/mid-training/instruction tuning are from [OpenCoder](https://huggingface.co/OpenCoder-LLM).
 - Our instruction tuning code is based on [LLaMA-Factory](https://github.com/hiyouga/LLaMA-Factory).
