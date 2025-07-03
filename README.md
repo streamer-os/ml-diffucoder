@@ -106,6 +106,8 @@ bash run.sh
 ### Inference
 The DiffuCoder models ([Base](https://huggingface.co/apple/DiffuCoder-7B-Base), [Instruct](https://huggingface.co/apple/DiffuCoder-7B-Instruct), and [cpGRPO](https://huggingface.co/apple/DiffuCoder-7B-cpGRPO)) are now available on HuggingFace. We'll be adding usage examples here shortly.
 
+**MLX support on Apple Silicon is in progress. We will make necessary updates to the repository once it is available.**
+
 ### Evaluation
 The diffusion inference algorithm is based on Dream-7B. The code evaluation is based on [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder/tree/main/qwencoder-eval).
 
