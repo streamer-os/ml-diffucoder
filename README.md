@@ -113,6 +113,7 @@ bash run.sh
 
 ### Inference
 The DiffuCoder models ([Base](https://huggingface.co/apple/DiffuCoder-7B-Base), [Instruct](https://huggingface.co/apple/DiffuCoder-7B-Instruct), and [cpGRPO](https://huggingface.co/apple/DiffuCoder-7B-cpGRPO)) are now available on HuggingFace. 
+Change `TOKEN_PER_STEP` to trade off between performance and speed. 
 
 <details>
   <summary>Usage for Base model (click to expand) </summary>
