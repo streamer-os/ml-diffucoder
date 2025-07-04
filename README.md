@@ -13,6 +13,7 @@ This software project accompanies the research paper, [DiffuCoder: Understanding
 
 **MLX support on Apple Silicon is in progress. We will make necessary updates to the repository once it is available.**
 
+- June 4, 2025. [MLX](https://github.com/ml-explore/mlx) support in progress. To preview or contribute, please check out this PR started by @Goekdeniz-Guelmez: [this PR](https://github.com/ml-explore/mlx-lm/pull/270)
 - June 4, 2025. Update inference usage/examples/demo.
 - June 2, 2025. Models are available on Huggingface.
 - June 1, 2025. Code is available.
