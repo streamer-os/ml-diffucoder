@@ -9,6 +9,14 @@
 
 This software project accompanies the research paper, [DiffuCoder: Understanding and Improving Masked Diffusion Models for Code Generation](https://arxiv.org/abs/2506.20639).
 
+### Updates
+
+**MLX support on Apple Silicon is in progress. We will make necessary updates to the repository once it is available.**
+
+- June 4, 2025. Update inference usage/examples/demo.
+- June 2, 2025. Models are available on Huggingface.
+- June 1, 2025. Code is available.
+
 <div align="center">
 <img src="figs/teaser.png"/>
 </div>
@@ -27,7 +35,7 @@ However, the generation pattern and post-training strategies of dLLMs remain und
 <img src="figs/pipeline.png"/>
 </div>
 
-We train **DiffuCoder** using the adaptation approach in [DiffuLLaMA](https://github.com/HKUNLP/DiffuLLaMA) and introduce a new metric — **autoregressiveness score** — to quantify the causal pattern during dLLM generation and the key findings are listed below.
+We train **DiffuCoder** using the adaptation approach in [DiffuLLaMA](https://github.com/HKUNLP/DiffuLLaMA) and introduce a new metric — **autoregressiveness score** — to quantify the causal pattern during dLLM generation. The key findings are listed below.
 
 ### Findings
 - dLLMs still exhibit a left-to-right bias due to the nature of text, but they can also break this strict order in AR models.
@@ -75,7 +83,7 @@ In this repository, we release our implementation of **Coupled-GRPO**, built upo
 #### 1. Prepare code and environment
 Clone the source code of Open-R1 from `git clone https://github.com/huggingface/open-r1`. Merge and replace files between ours and Open-R1's (including `setup.py`).
 
-Setup the environment and dependencies following Open-R1: 
+Set up the environment and dependencies following Open-R1: 
 ```bash
 env=openr1
 conda create -n $env python=3.11 -y -c anaconda
@@ -87,26 +95,162 @@ pip install flash-attn==2.8.0.post1 --no-build-isolation
 pip install -e ".[code]"
 ```
 
-Prepare code sandbox at [E2B](https://e2b.dev/). Export your E2B token to `E2B_API_KEY` environment variable. Login in wandb and export your `WANDB_ENTITY`.
+Prepare a code sandbox at [E2B](https://e2b.dev/). Export your E2B token to `E2B_API_KEY` environment variable. Log in to wandb and export your `WANDB_ENTITY`.
 
 #### 2. Data preparation
-We prepare hard split of GRPO training data based on [AceCode-89k](https://huggingface.co/datasets/TIGER-Lab/AceCode-87K).
+We prepare a hard split of GRPO training data based on [AceCode-89k](https://huggingface.co/datasets/TIGER-Lab/AceCode-87K).
 ```bash
 cd recipes
-python process_data.py --dataset_path "TIGER-Lab/AceCode-89K" --output_path "./acecode_hard.json" --difficulty "hard"
+python process_data.py --dataset_path "TIGER-Lab/AceCode-89K" --output_path "./acecode_hard.jsonl" --difficulty "hard"
 ```
 
 #### 3. Start GRPO training
 ```bash
 cd ..
 bash run.sh 
-# in `run.sh`, we start e2b server locally, but you can also run on cpu clusters to serve it.
+# in `run.sh`, we start e2b server locally, but you can also run it on CPU clusters.
 ```
 
 ### Inference
-The DiffuCoder models ([Base](https://huggingface.co/apple/DiffuCoder-7B-Base), [Instruct](https://huggingface.co/apple/DiffuCoder-7B-Instruct), and [cpGRPO](https://huggingface.co/apple/DiffuCoder-7B-cpGRPO)) are now available on HuggingFace. We'll be adding usage examples here shortly.
+The DiffuCoder models ([Base](https://huggingface.co/apple/DiffuCoder-7B-Base), [Instruct](https://huggingface.co/apple/DiffuCoder-7B-Instruct), and [cpGRPO](https://huggingface.co/apple/DiffuCoder-7B-cpGRPO)) are now available on HuggingFace. 
 
-**MLX support on Apple Silicon is in progress. We will make necessary updates to the repository once it is available.**
+<details>
+  <summary>Usage for Base model (click to expand) </summary>
+
+  ```python
+  import torch
+  from transformers import AutoModel, AutoTokenizer
+
+  model_path = "apple/DiffuCoder-7B-Base"
+  model = AutoModel.from_pretrained(model_path, torch_dtype=torch.bfloat16, trust_remote_code=True)
+  tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+  model = model.to("cuda").eval()
+
+  prompt = """
+  from typing import List
+
+  def has_close_elements(numbers: List[float], threshold: float) -> bool:
+      \"\"\"
+      Check if in given list of numbers, are any two numbers closer to each other than given threshold.
+      >>> has_close_elements([1.0, 2.0, 3.0], 0.5)
+      False
+      >>> has_close_elements([1.0, 2.8, 3.0, 4.0, 5.0, 2.0], 0.3)
+      True
+      \"\"\"
+  """
+
+  TOKEN_PER_STEP = 1 # diffusion timesteps * TOKEN_PER_STEP = total new tokens
+
+  inputs = tokenizer(prompt, return_tensors="pt")
+  input_ids = inputs.input_ids.to(device="cuda")
+  attention_mask = inputs.attention_mask.to(device="cuda")
+
+  output = model.diffusion_generate(
+      input_ids,
+      attention_mask=attention_mask,
+      max_new_tokens=256,
+      output_history=True,
+      return_dict_in_generate=True,
+      steps=256//TOKEN_PER_STEP,
+      temperature=0.2,
+      top_p=0.95,
+      alg="entropy",
+      alg_temp=0.,
+  )
+  generations = [
+      tokenizer.decode(g[len(p) :].tolist())
+      for p, g in zip(input_ids, output.sequences)
+  ]
+
+  print(generations[0].split(tokenizer.eos_token)[0])
+  ```
+</details>
+<details>
+<summary>Output (click to expand)</summary>
+
+```
+    # Sort the list to make it easier to find close elements
+    numbers.sort()
+    
+    # Iterate through the list, checking each adjacent pair
+    for i in range(len(numbers) - 1):
+        # If the difference between the current and next element is less than the threshold, return True
+        if numbers[i + 1] - numbers[i] < threshold:
+            return True
+    
+    # If no such pair is found, return False
+    return False
+```
+</details>
+
+> Given an example input from the HumanEval test, the output of DiffuCoder-Base is a direct completion of the code snippet.
+
+<details>
+  <summary>Usage for Instruct model (click to expand) </summary>
+
+  ```python
+  import torch
+  from transformers import AutoModel, AutoTokenizer
+
+  model_path = "apple/DiffuCoder-7B-cpGRPO"
+  model = AutoModel.from_pretrained(model_path, torch_dtype=torch.bfloat16, trust_remote_code=True)
+  tokenizer = AutoTokenizer.from_pretrained(model_path, trust_remote_code=True)
+  model = model.to("cuda").eval()
+
+  query = "Write a function to find the shared elements from the given two lists."
+  prompt = f"""<|im_start|>system
+  You are a helpful assistant.<|im_end|>
+  <|im_start|>user
+  {query.strip()}
+  <|im_end|>
+  <|im_start|>assistant
+  """ ## following the template of qwen; you can also use apply_chat_template function
+
+  TOKEN_PER_STEP = 1 # diffusion timesteps * TOKEN_PER_STEP = total new tokens
+
+  inputs = tokenizer(prompt, return_tensors="pt")
+  input_ids = inputs.input_ids.to(device="cuda")
+  attention_mask = inputs.attention_mask.to(device="cuda")
+
+  output = model.diffusion_generate(
+      input_ids,
+      attention_mask=attention_mask,
+      max_new_tokens=256,
+      output_history=True,
+      return_dict_in_generate=True,
+      steps=256//TOKEN_PER_STEP,
+      temperature=0.4,
+      top_p=0.95,
+      alg="entropy",
+      alg_temp=0.,
+  )
+  generations = [
+      tokenizer.decode(g[len(p) :].tolist())
+      for p, g in zip(input_ids, output.sequences)
+  ]
+
+  print(generations[0].split('<|dlm_pad|>')[0])
+  ```
+</details>
+<details>
+<summary>Output (click to expand)</summary>
+
+```
+Here is the code to solve this problem: 
+```python
+def shared_elements(list1, list2): 
+  return [value for value in list1 if value in  list2] 
+```<|im_end|>
+```
+</details>
+
+> Given an example input from the MBPP test, the output of DiffuCoder-cpGRPO is a chat-based response.
+
+#### Demo
+🚀 Start the demo and enter any prompt you want!
+```bash
+python inference_demo.py
+```
 
 ### Evaluation
 The diffusion inference algorithm is based on Dream-7B. The code evaluation is based on [Qwen2.5-Coder](https://github.com/QwenLM/Qwen2.5-Coder/tree/main/qwencoder-eval).

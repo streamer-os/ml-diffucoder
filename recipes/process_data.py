@@ -104,5 +104,5 @@ if __name__ == "__main__":
     
     
 """
-python process_data.py --dataset_path "TIGER-Lab/AceCode-89K" --output_path "./acecode_hard.json" --difficulty "hard"
+python process_data.py --dataset_path "TIGER-Lab/AceCode-89K" --output_path "./acecode_hard.jsonl" --difficulty "hard"
 """

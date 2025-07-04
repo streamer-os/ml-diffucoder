@@ -1,9 +1,9 @@
 # Model arguments
-model_name_or_path: /path-to-model
+model_name_or_path: /path-to-model # e.g. apple/DiffuCoder-7B-Instruct
 torch_dtype: bfloat16
 trust_remote_code: true
 # Data training arguments
-dataset_name: /path-to-dataset
+dataset_name: /path-to-dataset # e.g. ./recipes/acecode_hard.jsonl
 dataset_prompt_column: question
 system_prompt: "You are a helpful assistant."
 
