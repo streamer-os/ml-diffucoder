@@ -13,6 +13,8 @@ This software project accompanies the research paper, [DiffuCoder: Understanding
 
 **MLX support on Apple Silicon is in progress. We will make necessary updates to the repository once it is available.**
 
+- June 8, 2025. We are still training for 14B models, to be updated. 
+- June 7, 2025. [MLX community implementation of DiffuCoder 8bit model](https://huggingface.co/mlx-community/DiffuCoder-7B-cpGRPO-8bit)
 - June 4, 2025. [MLX](https://github.com/ml-explore/mlx) support in progress. To preview or contribute, please check out this PR started by @Goekdeniz-Guelmez: [this PR](https://github.com/ml-explore/mlx-lm/pull/270)
 - June 4, 2025. Update inference usage/examples/demo.
 - June 2, 2025. Models are available on Huggingface.
