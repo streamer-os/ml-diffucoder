@@ -416,19 +416,33 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 end_idx = min(i + generation_batch_size, prompt_ids.size(0))
                 batch_prompt_ids = prompt_ids[i:end_idx]
                 batch_prompt_mask = prompt_mask[i:end_idx]
+                # === generation compatibility block ===
+                # 准备通用的 generation 参数，从 self.args（Trainer args）读取默认值
+                gen_kwargs = {
+                    "steps": getattr(self.args, "diffusion_steps", getattr(self.args, "steps", 256)),
+                    "temperature": getattr(self.args, "generation_temperature", 1.0),
+                    "top_p": getattr(self.args, "top_p", getattr(self.args, "generation_top_p", None)),
+                    "top_k": getattr(self.args, "top_k", getattr(self.args, "generation_top_k", None)),
+                    "block_length": getattr(self.args, "block_length", 32),
+                    "dual_cache": getattr(self.args, "dual_cache", True),
+                    "replace_position": getattr(self.args, "replace_position", True),
+                    "generation_batch_size": getattr(self.args, "generation_batch_size", 1),
+                    # 额外可能有用的名字，若 parser 里有则也会传入
+                    "alg": getattr(self.args, "alg", None),
+                    "alg_temp": getattr(self.args, "alg_temp", None),
+                    "eps": getattr(self.args, "eps", None),
+                    "do_sample": getattr(self.args, "do_sample", None),
+                    "max_length": getattr(self.args, "max_length", None),
+                }
+                
+                # 过滤 None，调用兼容接口（ModelCompatWrapper 会路由到 dual_cache_generate / diffusion_generate / generate）
                 batch_prompt_completion_ids = self.model.diffusion_generate(
                     batch_prompt_ids,
                     attention_mask=batch_prompt_mask,
-                    max_new_tokens=gen_length,
-                    output_history=False,
-                    return_dict_in_generate=True,
-                    steps=steps,
-                    temperature=temperature,
-                    top_p=0.95 if temperature > 0 else 1.0,
-                    alg="entropy",
-                    alg_temp=0.0,
-                    mask_token_id=self.processing_class.mask_token_id
+                    **{k: v for k, v in gen_kwargs.items() if v is not None}
                 )
+                # === end block ===
+
                 # import pdb; pdb.set_trace();
                 prompt_completion_ids_all.append(batch_prompt_completion_ids.sequences)
 
