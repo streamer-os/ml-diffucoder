@@ -1,4 +1,4 @@
-export E2B_API_KEY=e2b_yourkey_here
+export E2B_API_KEY=e2b_bd27fe62abed5c9baef572f60d75576a1362c914
 
 nohup python scripts/e2b_router.py > e2b_router.log 2>&1 &
 
