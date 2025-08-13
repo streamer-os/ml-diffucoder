@@ -434,6 +434,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     "eps": getattr(self.args, "eps", None),
                     "do_sample": getattr(self.args, "do_sample", None),
                     "max_length": getattr(self.args, "max_length", None),
+                    "return_dict_in_generate": True
                 }
                 
                 # 过滤 None，调用兼容接口（ModelCompatWrapper 会路由到 dual_cache_generate / diffusion_generate / generate）
