@@ -12,6 +12,8 @@ from trl import ModelConfig, get_kbit_device_map, get_quantization_config
 
 from ..configs import GRPOConfig, SFTConfig
 
+from model.modeling_dream import DreamModel
+from model.configuration_dream import DreamConfig
 
 def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> PreTrainedTokenizer:
     """Get the tokenizer for the model."""
@@ -27,23 +29,12 @@ def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig
     return tokenizer
 
 
-def get_model(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> AutoModel:
-    """Get the model"""
-    torch_dtype = (
-        model_args.torch_dtype if model_args.torch_dtype in ["auto", None] else getattr(torch, model_args.torch_dtype)
-    )
-    quantization_config = get_quantization_config(model_args)
-    model_kwargs = dict(
-        revision=model_args.model_revision,
-        trust_remote_code=model_args.trust_remote_code,
-        attn_implementation=model_args.attn_implementation,
-        torch_dtype=torch_dtype,
-        use_cache=False if training_args.gradient_checkpointing else True,
-        device_map=get_kbit_device_map() if quantization_config is not None else None,
-        quantization_config=quantization_config,
-    )
-    model = AutoModel.from_pretrained(
+def get_model(model_args, training_args):
+    config = DreamConfig.from_pretrained(model_args.model_name_or_path)
+    model = DreamModel.from_pretrained(
         model_args.model_name_or_path,
-        **model_kwargs,
+        config=config,
+        torch_dtype=torch.bfloat16,  # 和你原来训练一致
+        trust_remote_code=True,      # 视情况
     )
     return model
