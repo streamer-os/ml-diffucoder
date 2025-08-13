@@ -469,6 +469,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
         logits_to_keep = completion_ids.size(
             1
         )  # we only need to compute the logits for the completion tokens
+        self.args.random_masking = True
         if self.args.random_masking:
             # use random seeds for every iterations in GRPO iterations
             mask_seeds = torch.randint(0, 2**12, (self.num_iterations,), device=device).tolist()
