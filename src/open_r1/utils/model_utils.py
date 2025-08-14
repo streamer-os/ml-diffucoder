@@ -44,8 +44,8 @@ def get_model(model_args, training_args):
 
     # Try DreamModel import (model/ must be in PYTHONPATH or installed)
     try:
-        from ...model.modeling_dream import DreamModel
-        from ...model.configuration_dream import DreamConfig
+        from ....model.modeling_dream import DreamModel
+        from ....model.configuration_dream import DreamConfig
         # compat wrapper
         from .dream_compat import ModelCompatWrapper
 
