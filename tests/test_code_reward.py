@@ -5,7 +5,7 @@
 
 import unittest
 
-from open_r1.rewards import code_reward, get_code_format_reward
+from src.open_r1.rewards import code_reward, get_code_format_reward
 
 
 class TestCodeRewards(unittest.TestCase):
