@@ -17,6 +17,17 @@
 
 
 from .configuration_dream import DreamConfig
-from .modeling_dream import DreamModel
+from .modeling_dream import DreamModel, DreamGenerationMixin
+from .tokenization_dream import DreamTokenizer
+from .generation_utils import DreamGenerationConfig, DreamModelOutput
+from .generation_utils_block import DreamGenerationMixin as BlockGenerationMixin
 
-__all__ = ["DreamConfig", "DreamModel"]
+__all__ = [
+    "DreamConfig",
+    "DreamModel", 
+    "DreamGenerationMixin",
+    "DreamTokenizer",
+    "DreamGenerationConfig",
+    "DreamModelOutput",
+    "BlockGenerationMixin"
+]
