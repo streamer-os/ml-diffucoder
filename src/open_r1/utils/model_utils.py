@@ -8,7 +8,25 @@ logger = logging.getLogger(__name__)
 
 # keep existing helper functions above (if any) unchanged
 # Replace or add this get_model function
+from transformers import AutoModel, AutoTokenizer, PreTrainedTokenizer
 
+from trl import ModelConfig, get_kbit_device_map, get_quantization_config
+
+from ..configs import GRPOConfig, SFTConfig
+
+def get_tokenizer(model_args: ModelConfig, training_args: SFTConfig | GRPOConfig) -> PreTrainedTokenizer:
+    """Get the tokenizer for the model."""
+    tokenizer = AutoTokenizer.from_pretrained(
+        model_args.model_name_or_path,
+        revision=model_args.model_revision,
+        trust_remote_code=model_args.trust_remote_code,
+    )
+
+    if training_args.chat_template is not None:
+        tokenizer.chat_template = training_args.chat_template
+
+    return tokenizer
+    
 def get_model(model_args, training_args):
     """
     Try to load DreamModel (from model/). If succeeds, wrap with ModelCompatWrapper.
