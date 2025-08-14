@@ -1,5 +1,5 @@
 # Model arguments
-model_name_or_path: /home/fit/huangg/WORK/hyg/diffucoder # e.g. apple/DiffuCoder-7B-Instruct
+model_name_or_path: /home/fit/huangg/WORK/ljb/ml-diffucoder # e.g. apple/DiffuCoder-7B-Instruct
 torch_dtype: bfloat16
 trust_remote_code: true
 # Data training arguments
