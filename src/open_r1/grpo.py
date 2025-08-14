@@ -17,7 +17,7 @@ from transformers.trainer_utils import get_last_checkpoint
 
 from .configs import GRPOConfig, GRPOScriptArguments
 from .rewards import get_reward_funcs
-from .data import get_model, get_tokenizer
+from .utils.model_utils import get_model, get_tokenizer
 from .callbacks import get_callbacks
 from .wandb_logging import init_wandb_training
 from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
