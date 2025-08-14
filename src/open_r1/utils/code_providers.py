@@ -11,7 +11,7 @@ import abc
 import asyncio
 from typing import List, Optional
 
-from ..utils import is_e2b_available, is_morph_available
+from .import_utils import is_e2b_available, is_morph_available
 
 import re
 
