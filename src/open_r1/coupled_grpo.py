@@ -2,10 +2,10 @@
 # For licensing see accompanying LICENSE file.
 # Copyright (C) 2025 Apple Inc. All Rights Reserved.
 #
-
+import time
 import torch
 from trl.trainer.grpo_trainer import GRPOTrainer
-from typing import Any, Callable, Optional, Union, Sized
+from typing import Any, Callable, Optional, Union, Sized, Dict, List
 import numpy as np
 from transformers import PreTrainedModel, PreTrainedTokenizerBase, TrainerCallback, Trainer
 from datasets import Dataset, IterableDataset
