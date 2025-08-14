@@ -15,13 +15,13 @@ from datasets import load_dataset
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from configs import GRPOConfig, GRPOScriptArguments
-from rewards import get_reward_funcs
-from .utils import get_model, get_tokenizer
-from .utils.callbacks import get_callbacks
-from .utils.wandb_logging import init_wandb_training
+from open_r1.configs import GRPOConfig, GRPOScriptArguments
+from open_r1.rewards import get_reward_funcs
+from open_r1.utils import get_model, get_tokenizer
+from open_r1.utils.callbacks import get_callbacks
+from open_r1.utils.wandb_logging import init_wandb_training
 from trl import GRPOTrainer, ModelConfig, TrlParser, get_peft_config
-from coupled_grpo import DiffuGRPOTrainer
+from open_r1.coupled_grpo import DiffuGRPOTrainer
 
 logger = logging.getLogger(__name__)
 
