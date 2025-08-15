@@ -91,22 +91,18 @@ class ModelCompatWrapper(nn.Module):
             "Make sure you imported the Dream model files and wrapped them with ModelCompatWrapper."
         )
 
-    # Provide attribute passthrough for convenience (so external code can still access model.*)、
+    # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
-        # 优先从父类获取属性，以避免递归。
-        # 这样可以安全地访问 self.model, self.tokenizer 等
+        # 直接使用 object.__getattribute__ 来避免递归
         try:
-            model_instance = super().__getattribute__("model")
+            model_instance = object.__getattribute__(self, "model")
         except AttributeError:
-            # 如果 self.model 尚未初始化，就抛出 AttributeError
-            # （这通常不应该发生，但作为防御性编程）
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute 'model'")
-    
-        # 如果要查找的属性是 model, tokenizer, generation_config 本身，
-        # 我们应该在 __init__ 中直接设置，并用 super().__getattribute__ 访问。
-        # 所以这里我们只处理转发给内部模型的情况。
+            # 如果 self.model 不存在，说明初始化有问题
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         
+        # 检查内部模型是否有这个属性
         if hasattr(model_instance, name):
             return getattr(model_instance, name)
         
+        # 如果内部模型也没有这个属性，抛出错误
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
