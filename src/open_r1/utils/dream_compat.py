@@ -162,6 +162,41 @@ class ModelCompatWrapper(nn.Module):
             f"Underlying model does not support gradient_checkpointing_enable"
         )
 
+    def get_submodule(self, target: str):
+        """
+        Delegate get_submodule lookups that start with 'model' to the wrapped model.
+        This ensures PyTorch utilities like get_parameter/get_submodule used by
+        TRL's create_reference_model can find parameters inside the wrapped model.
+        """
+        if target == "":
+            return self
+
+        atoms = target.split(".")
+        # If the lookup targets the wrapped model (prefix 'model'), delegate
+        if atoms[0] == "model":
+            model = self.__dict__.get("model", None)
+            if model is None:
+                raise AttributeError(f"{type(self).__name__} has no attribute `model`")
+            # If only 'model' was requested, return the wrapped model
+            if len(atoms) == 1:
+                return model
+            # Otherwise delegate the rest of the path to the wrapped model
+            subpath = ".".join(atoms[1:])
+            if hasattr(model, "get_submodule"):
+                return model.get_submodule(subpath)
+            # Fallback: manually walk attributes on the wrapped model
+            mod = model
+            for name in subpath.split("."):
+                if not hasattr(mod, name):
+                    raise AttributeError(
+                        f"{type(mod).__name__} has no attribute `{name}`"
+                    )
+                mod = getattr(mod, name)
+            return mod
+
+        # Otherwise fallback to the default implementation
+        return super().get_submodule(target)
+
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
         # During initialization, just raise AttributeError for unknown attributes
