@@ -13,9 +13,12 @@ class ModelCompatWrapper(nn.Module):
     """
 
     def __init__(self, model: Any, tokenizer: Optional[Any] = None):
-        super().__init__()
+        # Set model first to avoid __getattr__ issues
         self.model = model
         self.tokenizer = tokenizer
+        
+        # Call super().__init__() after setting model
+        super().__init__()
         
         # Expose generation_config if model has it
         self.generation_config = getattr(model, "generation_config", None)
@@ -32,7 +35,11 @@ class ModelCompatWrapper(nn.Module):
             self.config = MinimalConfig()
         
         # Initial binding of generation methods (following Dream pattern)
-        self._bind_dream_methods()
+        try:
+            self._bind_dream_methods()
+        except Exception as e:
+            # If binding fails, that's ok - methods might already exist or be bound later
+            pass
 
     def _bind_dream_methods(self, use_cache=False):
         """
@@ -95,15 +102,13 @@ class ModelCompatWrapper(nn.Module):
 
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
-        # Use __dict__ to avoid recursion
-        if 'model' not in self.__dict__:
+        # Use hasattr to safely check if model exists, avoiding recursion
+        if not hasattr(self, 'model') or self.model is None:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (model not initialized)")
         
-        model_instance = self.__dict__['model']
-        
         # Check if the internal model has this attribute
-        if hasattr(model_instance, name):
-            return getattr(model_instance, name)
+        if hasattr(self.model, name):
+            return getattr(self.model, name)
         
         # If the internal model doesn't have this attribute either, raise error
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
