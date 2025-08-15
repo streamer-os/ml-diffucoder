@@ -38,7 +38,7 @@ def get_dataset(args: GRPOScriptArguments) -> DatasetDict:
             if dataset_config.weight is not None:
                 ds = ds.shuffle(seed=seed).select(range(int(len(ds) * dataset_config.weight)))
                 logger.info(
-                    f"Subsampled dataset '{dataset_config.id}' (config: {dataset_config.config}) with weight={dataset_config.weight} to {len(ds)} examp>                )
+                    f"Subsampled dataset '{dataset_config.id}' (config: {dataset_config.config}) with weight={dataset_config.weight} to {len(ds)} examples")
 
             datasets_list.append(ds)
             
