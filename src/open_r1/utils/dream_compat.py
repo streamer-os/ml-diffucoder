@@ -109,11 +109,11 @@ class ModelCompatWrapper(nn.Module):
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
         # During initialization, just raise AttributeError for unknown attributes
-        if getattr(self, '_initializing', False):
+        if self.__dict__.get('_initializing', False):
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
         
-        # After initialization, check if we have the model
-        model_instance = getattr(self, 'model', None)
+        # After initialization, check if we have the model using __dict__ to avoid recursion
+        model_instance = self.__dict__.get('model', None)
         if model_instance is None:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (model not initialized)")
         
