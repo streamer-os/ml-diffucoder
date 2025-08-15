@@ -2,8 +2,8 @@
 """
 Compatibility wrapper for Dream-style models so they behave like the "old" Dream models
 expected by other code (e.g. TRL create_reference_model). This wrapper ensures that the
-underlying `model` attribute is visible and, crucially, registered as an nn.Module submodule
-so parameters are discoverable by optimizers / DeepSpeed / accelerate.
+underlying `model` attribute is visible and registered as an nn.Module submodule, and avoids
+__getattr__ recursion by using direct __dict__/object.__getattribute__ accesses.
 """
 
 from __future__ import annotations
@@ -29,24 +29,21 @@ class ModelCompatWrapper(nn.Module):
     def __init__(self, model: Any, tokenizer: Optional[Any] = None):
         super().__init__()
 
-        # IMPORTANT: register as a submodule so that nn.Module machinery (parameters(),
-        # named_parameters(), etc.) discovers the wrapped model's parameters.
-        # Using super().__setattr__ ensures PyTorch registers the child module.
+        # Register the wrapped model as a child module (so parameters() finds it).
         try:
             super().__setattr__("model", model)
         except Exception:
-            # fallback (shouldn't normally happen)
+            # Fallback if super().__setattr__ fails for some reason
             object.__setattr__(self, "model", model)
 
-        # register tokenizer if provided (tokenizer is usually not an nn.Module,
-        # so regular setattr is fine)
+        # Tokenizer is not an nn.Module, but still store it
         if tokenizer is not None:
             try:
                 super().__setattr__("tokenizer", tokenizer)
             except Exception:
                 object.__setattr__(self, "tokenizer", tokenizer)
 
-        # Expose config/generation_config if present; fallback to MinimalConfig
+        # Expose config/generation_config if available; fallback to MinimalConfig
         try:
             if hasattr(model, "generation_config"):
                 super().__setattr__("generation_config", getattr(model, "generation_config"))
@@ -61,10 +58,10 @@ class ModelCompatWrapper(nn.Module):
         except Exception:
             super().__setattr__("config", MinimalConfig())
 
-        # mark binding flag
-        super().__setattr__("_dream_methods_bound", False)
+        # mark binding flag (store directly)
+        object.__setattr__(self, "_dream_methods_bound", False)
 
-        # Try to bind generation helpers
+        # Attempt to bind generation helpers (best-effort)
         try:
             self._bind_dream_methods()
         except Exception:
@@ -74,10 +71,12 @@ class ModelCompatWrapper(nn.Module):
     # Helper binding / rebind
     # -------------------------
     def _bind_dream_methods(self, use_cache: bool = False):
-        model = getattr(self, "model", None)
+        # Use __dict__ to avoid triggering __getattr__
+        model = self.__dict__.get("model", None)
         if model is None:
             return
 
+        # Common generation helpers to expose on wrapper (best-effort)
         for name in ("generate", "prepare_inputs_for_generation", "update_model_kwargs_for_generation"):
             if hasattr(model, name):
                 try:
@@ -96,7 +95,8 @@ class ModelCompatWrapper(nn.Module):
     # Delegation helpers
     # -------------------------
     def get_parameter(self, target: str) -> torch.nn.Parameter:
-        model = getattr(self, "model", None)
+        # Direct read from __dict__ to avoid recursion
+        model = self.__dict__.get("model", None)
 
         if model is not None:
             if hasattr(model, "get_parameter"):
@@ -105,7 +105,7 @@ class ModelCompatWrapper(nn.Module):
                 except Exception:
                     logger.debug("Delegated model.get_parameter failed for %s", target, exc_info=True)
 
-            # Manual walk
+            # Manual dotted-path walk on wrapped model
             parts = target.split(".")
             obj = model
             try:
@@ -119,7 +119,8 @@ class ModelCompatWrapper(nn.Module):
         return super().get_parameter(target)
 
     def get_submodule(self, target: str):
-        model = getattr(self, "model", None)
+        # Use __dict__ directly
+        model = self.__dict__.get("model", None)
 
         if target == "model" or target.startswith("model."):
             sub_target = target if target == "model" else target.split(".", 1)[1]
@@ -141,6 +142,7 @@ class ModelCompatWrapper(nn.Module):
                 except Exception:
                     logger.debug("Manual walk on wrapped model failed for %s", sub_target, exc_info=True)
 
+        # Fallback to wrapper's submodules / manual walk
         try:
             return super().get_submodule(target)
         except Exception:
@@ -158,10 +160,10 @@ class ModelCompatWrapper(nn.Module):
     def __setattr__(self, name: str, value: Any):
         try:
             if name == "model":
-                # Use super().__setattr__ to register submodule properly
+                # Register as submodule so that parameters() finds it
                 super().__setattr__(name, value)
 
-                # update config/generation_config if available
+                # Update config/generation_config if available on the new model
                 try:
                     if hasattr(value, "config"):
                         super().__setattr__("config", getattr(value, "config"))
@@ -176,23 +178,28 @@ class ModelCompatWrapper(nn.Module):
                 except Exception:
                     pass
 
-                # rebind helper methods
+                # Rebind generation helpers
                 try:
                     self._bind_dream_methods()
                 except Exception:
                     logger.debug("Rebinding dream methods after model set failed.", exc_info=True)
                 return
 
-            # default behaviour keeps nn.Module registration for other submodules
+            # Default behaviour (keeps nn.Module registration for other submodules)
             super().__setattr__(name, value)
         except Exception:
+            # Defensive fallback
             try:
                 object.__setattr__(self, name, value)
             except Exception:
                 logger.exception("Failed to set attribute %s on ModelCompatWrapper", name)
 
     def __getattr__(self, name: str) -> Any:
-        model = getattr(self, "model", None)
+        """
+        Only called when normal attribute lookup fails. Do NOT use getattr(self, ...) here;
+        instead directly read the wrapped model from __dict__ to avoid recursion.
+        """
+        model = self.__dict__.get("model", None)
         if model is not None:
             try:
                 return getattr(model, name)
@@ -208,7 +215,7 @@ class ModelCompatWrapper(nn.Module):
     # -------------------------
     @property
     def device(self):
-        model = getattr(self, "model", None)
+        model = self.__dict__.get("model", None)
         if model is not None:
             try:
                 for p in model.parameters():
@@ -220,11 +227,11 @@ class ModelCompatWrapper(nn.Module):
         return torch.device("cpu")
 
     def to(self, *args, **kwargs):
-        model = getattr(self, "model", None)
+        model = self.__dict__.get("model", None)
         if model is not None:
             try:
                 model = model.to(*args, **kwargs)
-                # ensure the registered submodule references updated model instance
+                # ensure registered child updated to possibly new object
                 super().__setattr__("model", model)
                 return self
             except Exception:
@@ -232,7 +239,7 @@ class ModelCompatWrapper(nn.Module):
         return super().to(*args, **kwargs)
 
     def state_dict(self, *args, **kwargs):
-        model = getattr(self, "model", None)
+        model = self.__dict__.get("model", None)
         if model is not None:
             try:
                 return model.state_dict(*args, **kwargs)
@@ -241,7 +248,7 @@ class ModelCompatWrapper(nn.Module):
         return super().state_dict(*args, **kwargs)
 
     def load_state_dict(self, state_dict, *args, **kwargs):
-        model = getattr(self, "model", None)
+        model = self.__dict__.get("model", None)
         if model is not None:
             try:
                 return model.load_state_dict(state_dict, *args, **kwargs)
