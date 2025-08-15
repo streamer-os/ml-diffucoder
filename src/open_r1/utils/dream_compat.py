@@ -105,7 +105,15 @@ class ModelCompatWrapper(nn.Module):
         This should be called by the trainer code when needed, following Dream pattern.
         """
         self._bind_dream_methods(use_cache=use_cache)
-
+        
+    def gradient_checkpointing_enable(self):
+        """
+        代理 gradient_checkpointing_enable 到底层模型，如果没有则抛出友好异常。
+        """
+        if hasattr(self.model, "gradient_checkpointing_enable"):
+            return self.model.gradient_checkpointing_enable()
+        raise AttributeError(f"Underlying model does not support gradient_checkpointing_enable")
+    
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
         # During initialization, just raise AttributeError for unknown attributes
