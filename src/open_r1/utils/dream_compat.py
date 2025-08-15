@@ -8,7 +8,7 @@ import types
 class ModelCompatWrapper(nn.Module):
     """
     Wrap a DreamModel (or other model that exposes dual_cache_generate/diffusion_generate)
-    and provide a minimal compatibility layer expected by the trainer codebase.
+    and
 
     This wrapper follows the same pattern as the Dream evaluation code.
     """
@@ -164,52 +164,50 @@ class ModelCompatWrapper(nn.Module):
 
     def get_parameter(self, target: str):
         """
-        Delegate get_parameter calls that reference the wrapped model (e.g. "model.xxx.yyy")
-        to the inner model. This prevents torch/TRL utilities that call get_parameter
-        from failing when operating on the wrapper.
+        Delegate get_parameter calls to the inner model.
         """
-        if isinstance(target, str) and target.startswith("model."):
-            inner = self.__dict__.get("model", None)
-            if inner is None:
-                raise AttributeError(f"{type(self).__name__} has no attribute `model`")
-            # Strip the leading 'model.' and delegate
-            return inner.get_parameter(target[len("model.") :])
-        # Fallback to default behavior
+        model = self.__dict__.get("model", None)
+        if model is not None:
+            try:
+                # First, try to resolve the parameter from the wrapped model.
+                if hasattr(model, "get_parameter"):
+                    return model.get_parameter(target)
+                else:
+                    # Fallback for models without get_parameter: manually walk attributes
+                    obj = model
+                    for name in target.split("."):
+                        obj = getattr(obj, name)
+                    return obj
+            except AttributeError:
+                # If not found in the wrapped model, it might be on the wrapper itself.
+                pass
+
+        # Fallback to the default implementation for the wrapper's own parameters
+        # or when the model is not yet set.
         return super().get_parameter(target)
 
     def get_submodule(self, target: str):
         """
-        Delegate get_submodule lookups that start with 'model' to the wrapped model.
-        This ensures PyTorch utilities like get_parameter/get_submodule used by
-        TRL's create_reference_model can find parameters inside the wrapped model.
+        Delegate get_submodule lookups to the wrapped model.
         """
-        if target == "":
-            return self
-
-        atoms = target.split(".")
-        # If the lookup targets the wrapped model (prefix 'model'), delegate
-        if atoms[0] == "model":
-            model = self.__dict__.get("model", None)
-            if model is None:
-                raise AttributeError(f"{type(self).__name__} has no attribute `model`")
-            # If only 'model' was requested, return the wrapped model
-            if len(atoms) == 1:
-                return model
-            # Otherwise delegate the rest of the path to the wrapped model
-            subpath = ".".join(atoms[1:])
-            if hasattr(model, "get_submodule"):
-                return model.get_submodule(subpath)
-            # Fallback: manually walk attributes on the wrapped model
-            mod = model
-            for name in subpath.split("."):
-                if not hasattr(mod, name):
-                    raise AttributeError(
-                        f"{type(mod).__name__} has no attribute `{name}`"
-                    )
-                mod = getattr(mod, name)
-            return mod
-
-        # Otherwise fallback to the default implementation
+        model = self.__dict__.get("model", None)
+        if model is not None:
+            try:
+                # First, try to resolve the submodule from the wrapped model.
+                if hasattr(model, "get_submodule"):
+                    return model.get_submodule(target)
+                else:
+                    # Fallback for models without get_submodule: manually walk attributes
+                    mod = model
+                    for name in target.split("."):
+                        mod = getattr(mod, name)
+                    return mod
+            except AttributeError:
+                # If not found in the wrapped model, it might be on the wrapper itself.
+                pass
+        
+        # Fallback to the default implementation for the wrapper's own attributes
+        # or when the model is not yet set.
         return super().get_submodule(target)
 
     # Provide attribute passthrough for convenience (so external code can still access model.*)
