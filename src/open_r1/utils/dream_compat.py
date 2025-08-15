@@ -3,7 +3,8 @@ import torch
 from typing import Any, Optional
 import torch.nn as nn
 import types
-
+from transformers import PretrainedConfig
+from model.modeling_dream import DreamModel 
 
 class ModelCompatWrapper(nn.Module):
     """
@@ -12,15 +13,20 @@ class ModelCompatWrapper(nn.Module):
 
     This wrapper follows the same pattern as the Dream evaluation code.
     """
-
-    def __init__(self, model: Any, tokenizer: Optional[Any] = None):
-        # Set a flag to indicate we're in initialization
-        self._initializing = True
-
-        # Must call super().__init__() first for nn.Module
+    def __init__(self, model_or_config: Any, tokenizer: Optional[Any] = None):
+        # 必须先调用父类 nn.Module 的 __init__ 方法
         super().__init__()
+        self._init_flag = True
 
-        # Now we can safely assign the model and other attributes
+        # 处理从配置对象进行的初始化（为了兼容 trl 的 create_reference_model）
+        if isinstance(model_or_config, PretrainedConfig):
+            # 如果传入的是配置对象，则用它来创建一个新的 DreamModel 实例
+            model = DreamModel(model_or_config)
+        else:
+            # 否则，直接使用传入的模型实例
+            model = model_or_config
+
+        # 现在可以安全地为 model 和其他属性赋值
         self.model = model
         self.tokenizer = tokenizer
 
