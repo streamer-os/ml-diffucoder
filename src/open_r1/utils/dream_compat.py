@@ -93,14 +93,20 @@ class ModelCompatWrapper(nn.Module):
 
     # Provide attribute passthrough for convenience (so external code can still access model.*)、
     def __getattr__(self, name: str):
-        # 如果属性已经在对象字典中，直接返回
-        # 这样可以避免对 model, tokenizer 等属性的递归
-        if name in self.__dict__:
-            return self.__dict__[name]
+        # 优先从父类获取属性，以避免递归。
+        # 这样可以安全地访问 self.model, self.tokenizer 等
+        try:
+            model_instance = super().__getattribute__("model")
+        except AttributeError:
+            # 如果 self.model 尚未初始化，就抛出 AttributeError
+            # （这通常不应该发生，但作为防御性编程）
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute 'model'")
+    
+        # 如果要查找的属性是 model, tokenizer, generation_config 本身，
+        # 我们应该在 __init__ 中直接设置，并用 super().__getattribute__ 访问。
+        # 所以这里我们只处理转发给内部模型的情况。
         
-        # 检查内部模型是否有该属性
-        if hasattr(self.model, name):
-            return getattr(self.model, name)
+        if hasattr(model_instance, name):
+            return getattr(model_instance, name)
         
-        # 如果都没有，则抛出 AttributeError
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
