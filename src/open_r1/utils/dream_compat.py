@@ -91,9 +91,16 @@ class ModelCompatWrapper(nn.Module):
             "Make sure you imported the Dream model files and wrapped them with ModelCompatWrapper."
         )
 
-    # Provide attribute passthrough for convenience (so external code can still access model.*)
+    # Provide attribute passthrough for convenience (so external code can still access model.*)、
     def __getattr__(self, name: str):
-        # ensure Python doesn't recurse
-        if name in ("model", "tokenizer", "generation_config"):
-            return super().__getattribute__(name)
-        return getattr(self.model, name)
+        # 如果属性已经在对象字典中，直接返回
+        # 这样可以避免对 model, tokenizer 等属性的递归
+        if name in self.__dict__:
+            return self.__dict__[name]
+        
+        # 检查内部模型是否有该属性
+        if hasattr(self.model, name):
+            return getattr(self.model, name)
+        
+        # 如果都没有，则抛出 AttributeError
+        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
