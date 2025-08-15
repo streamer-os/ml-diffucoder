@@ -2,19 +2,58 @@
 import torch
 from typing import Any, Optional
 import torch.nn as nn
+import types
 
 class ModelCompatWrapper(nn.Module):
     """
     Wrap a DreamModel (or other model that exposes dual_cache_generate/diffusion_generate)
     and provide a minimal compatibility layer expected by the trainer codebase.
+    
+    This wrapper follows the same pattern as the Dream evaluation code.
     """
 
     def __init__(self, model: Any, tokenizer: Optional[Any] = None):
         super().__init__()
         self.model = model
         self.tokenizer = tokenizer
+        
         # Expose generation_config if model has it
         self.generation_config = getattr(model, "generation_config", None)
+        
+        # Expose config if model has it, otherwise create a minimal one
+        if hasattr(model, "config"):
+            self.config = model.config
+        else:
+            # Create a minimal config object for compatibility
+            class MinimalConfig:
+                def __init__(self):
+                    self._name_or_path = getattr(model, '_name_or_path', 'unknown_model')
+                    self.model_type = getattr(model, 'model_type', 'custom')
+            self.config = MinimalConfig()
+        
+        # Initial binding of generation methods (following Dream pattern)
+        self._bind_dream_methods()
+
+    def _bind_dream_methods(self, use_cache=False):
+        """
+        Bind Dream generation methods to the model.
+        This follows the exact pattern from Dream evaluation code.
+        """
+        try:
+            if use_cache:
+                from model.generation_utils_block import DreamGenerationMixin
+            else:
+                from model.generation_utils import DreamGenerationMixin
+            
+            self.model.diffusion_generate = types.MethodType(
+                DreamGenerationMixin.diffusion_generate, self.model
+            )
+            self.model._sample = types.MethodType(
+                DreamGenerationMixin._sample, self.model
+            )
+        except ImportError:
+            # If Dream modules are not available, that's ok - the model might already have these methods
+            pass
 
     def __call__(self, *args, **kwargs):
         return self.model(*args, **kwargs)
@@ -47,62 +86,24 @@ class ModelCompatWrapper(nn.Module):
             return self.model.resize_token_embeddings(*args, **kwargs)
         raise RuntimeError("Underlying model has no resize_token_embeddings()")
 
-    def diffusion_generate(self, input_ids, attention_mask=None, **kwargs):
+    def rebind_generation_methods(self, use_cache=False):
         """
-        Compatibility entrypoint used by trainer generation code.
-
-        It:
-        - prefers dream-style dual_cache_generate if available,
-        - falls back to diffusion_generate if present,
-        - otherwise error.
-        kwargs will be forwarded as-is (so pass steps, block_length, dual_cache, replace_position, top_p, top_k, temperature, etc).
+        Rebind generation methods based on use_cache parameter.
+        This should be called by the trainer code when needed, following Dream pattern.
         """
-        # Normalize inputs
-        attn = attention_mask
-
-        # If Dream API exists, call its dual_cache_generate (or block generate)
-        if hasattr(self.model, "dual_cache_generate"):
-            return self.model.dual_cache_generate(
-                input_ids,
-                attention_mask=attn,
-                **kwargs,
-            )
-
-        # Fallback: some models already implement diffusion_generate
-        if hasattr(self.model, "diffusion_generate"):
-            return self.model.diffusion_generate(
-                input_ids,
-                attention_mask=attn,
-                **kwargs,
-            )
-
-        # Last resort: try generic .generate if it implements some behavior
-        if hasattr(self.model, "generate"):
-            # We try to map plausible kwargs for generate
-            gen_kwargs = {}
-            # common mapping
-            for k in ("max_length", "temperature", "top_p", "top_k", "do_sample"):
-                if k in kwargs:
-                    gen_kwargs[k] = kwargs[k]
-            return self.model.generate(input_ids, attention_mask=attn, **gen_kwargs)
-
-        raise RuntimeError(
-            "Wrapped model has no dual_cache_generate/diffusion_generate/generate method. "
-            "Make sure you imported the Dream model files and wrapped them with ModelCompatWrapper."
-        )
+        self._bind_dream_methods(use_cache=use_cache)
 
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
-        # 直接使用 object.__getattribute__ 来避免递归
-        try:
-            model_instance = object.__getattribute__(self, "model")
-        except AttributeError:
-            # 如果 self.model 不存在，说明初始化有问题
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        # Use __dict__ to avoid recursion
+        if 'model' not in self.__dict__:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (model not initialized)")
         
-        # 检查内部模型是否有这个属性
+        model_instance = self.__dict__['model']
+        
+        # Check if the internal model has this attribute
         if hasattr(model_instance, name):
             return getattr(model_instance, name)
         
-        # 如果内部模型也没有这个属性，抛出错误
+        # If the internal model doesn't have this attribute either, raise error
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
