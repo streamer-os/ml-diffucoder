@@ -1,6 +1,5 @@
 from .configs import GRPOConfig, SFTConfig, GRPOScriptArguments
 from .coupled_grpo import DiffuGRPOTrainer
-from .grpo import main
 from .rewards import get_reward_funcs
 from .data import get_dataset
 from .callbacks import get_callbacks
@@ -11,7 +10,6 @@ __all__ = [
     "SFTConfig", 
     "GRPOScriptArguments",
     "DiffuGRPOTrainer",
-    "main",
     "get_reward_funcs",
     "get_dataset",
     "get_callbacks",
