@@ -1,5 +1,6 @@
 # 导出 API 密钥，这一行不需要修改
 export E2B_API_KEY=e2b_bd27fe62abed5c9baef572f60d75576a1362c914
+export PYTHONPATH=$(pwd):$PYTHONPATH
 
 # 启动 e2b_router.py 保持不变，因为它是单独的脚本
 nohup python scripts/e2b_router.py > e2b_router.log 2>&1 &
