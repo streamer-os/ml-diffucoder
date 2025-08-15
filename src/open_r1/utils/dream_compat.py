@@ -4,28 +4,29 @@ from typing import Any, Optional
 import torch.nn as nn
 import types
 
+
 class ModelCompatWrapper(nn.Module):
     """
     Wrap a DreamModel (or other model that exposes dual_cache_generate/diffusion_generate)
     and provide a minimal compatibility layer expected by the trainer codebase.
-    
+
     This wrapper follows the same pattern as the Dream evaluation code.
     """
 
     def __init__(self, model: Any, tokenizer: Optional[Any] = None):
         # Set a flag to indicate we're in initialization
         self._initializing = True
-        
+
         # Must call super().__init__() first for nn.Module
         super().__init__()
-        
+
         # Now we can safely assign the model and other attributes
         self.model = model
         self.tokenizer = tokenizer
-        
+
         # Expose generation_config if model has it
         self.generation_config = getattr(model, "generation_config", None)
-        
+
         # Expose config if model has it, otherwise create a minimal one
         if hasattr(model, "config"):
             self.config = model.config
@@ -33,13 +34,19 @@ class ModelCompatWrapper(nn.Module):
             # Create a minimal config object for compatibility
             class MinimalConfig:
                 def __init__(self):
-                    self._name_or_path = getattr(model, '_name_or_path', 'unknown_model')
-                    self.model_type = getattr(model, 'model_type', 'custom')
+                    self._name_or_path = getattr(
+                        model, "_name_or_path", "unknown_model"
+                    )
+                    self.model_type = getattr(model, "model_type", "custom")
+
             self.config = MinimalConfig()
-        
+
         # Clear the initialization flag
         self._initializing = False
-        
+
+        # track requested gradient checkpointing state if called before model set
+        self._gc_enabled_requested = False
+
         # Initial binding of generation methods (following Dream pattern)
         try:
             self._bind_dream_methods()
@@ -57,7 +64,7 @@ class ModelCompatWrapper(nn.Module):
                 from model.generation_utils_block import DreamGenerationMixin
             else:
                 from model.generation_utils import DreamGenerationMixin
-            
+
             self.model.diffusion_generate = types.MethodType(
                 DreamGenerationMixin.diffusion_generate, self.model
             )
@@ -105,31 +112,76 @@ class ModelCompatWrapper(nn.Module):
         This should be called by the trainer code when needed, following Dream pattern.
         """
         self._bind_dream_methods(use_cache=use_cache)
-        
+
+    def __setattr__(self, name, value):
+        """
+        Intercept setting of the wrapped `model` so that if gradient_checkpointing
+        was requested before the inner model existed, we can enable it once the
+        model is assigned.
+        """
+        # For the very common case of setting attributes during initialization
+        # or other simple attributes, delegate to the base implementation.
+        # Handle 'model' specially so we can react when it's assigned.
+        if name == "model":
+            super().__setattr__(name, value)
+            # If gradient checkpointing was requested earlier, apply it now
+            try:
+                if (
+                    self.__dict__.get("_gc_enabled_requested", False)
+                    and value is not None
+                ):
+                    if hasattr(value, "gradient_checkpointing_enable"):
+                        value.gradient_checkpointing_enable()
+                    # Clear the requested flag regardless so we don't re-run
+                    self.__dict__["_gc_enabled_requested"] = False
+            except Exception:
+                # Be defensive: don't raise from __setattr__ -- just continue
+                pass
+            return
+
+        super().__setattr__(name, value)
+
     def gradient_checkpointing_enable(self):
         """
-        代理 gradient_checkpointing_enable 到底层模型，如果没有则抛出友好异常。
+        代理 gradient_checkpointing_enable 到底层模型，如果没有则延迟应用（不抛出异常）。
+        如果在模型尚未初始化时被调用，则记录请求，并在模型赋值时执行。
         """
-        if self.__dict__.get('_initializing', False) or self.__dict__.get('model', None) is None:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute 'model' (model not initialized)")
+        # If still initializing or model not set, defer the request instead of raising
+        if (
+            self.__dict__.get("_initializing", False)
+            or self.__dict__.get("model", None) is None
+        ):
+            # Record the request so __setattr__ can apply it later
+            self.__dict__["_gc_enabled_requested"] = True
+            return
+        # If underlying model supports it, call through
         if hasattr(self.model, "gradient_checkpointing_enable"):
             return self.model.gradient_checkpointing_enable()
-        raise AttributeError(f"Underlying model does not support gradient_checkpointing_enable")
-    
+        # Otherwise raise a clear error
+        raise AttributeError(
+            f"Underlying model does not support gradient_checkpointing_enable"
+        )
+
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
         # During initialization, just raise AttributeError for unknown attributes
-        if self.__dict__.get('_initializing', False):
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
-        
+        if self.__dict__.get("_initializing", False):
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}'"
+            )
+
         # After initialization, check if we have the model using __dict__ to avoid recursion
-        model_instance = self.__dict__.get('model', None)
+        model_instance = self.__dict__.get("model", None)
         if model_instance is None:
-            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (model not initialized)")
-        
+            raise AttributeError(
+                f"'{type(self).__name__}' object has no attribute '{name}' (model not initialized)"
+            )
+
         # Check if the internal model has this attribute
         if hasattr(model_instance, name):
             return getattr(model_instance, name)
-        
+
         # If the internal model doesn't have this attribute either, raise error
-        raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        raise AttributeError(
+            f"'{type(self).__name__}' object has no attribute '{name}'"
+        )
