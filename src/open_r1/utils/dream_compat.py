@@ -162,6 +162,21 @@ class ModelCompatWrapper(nn.Module):
             f"Underlying model does not support gradient_checkpointing_enable"
         )
 
+    def get_parameter(self, target: str):
+        """
+        Delegate get_parameter calls that reference the wrapped model (e.g. "model.xxx.yyy")
+        to the inner model. This prevents torch/TRL utilities that call get_parameter
+        from failing when operating on the wrapper.
+        """
+        if isinstance(target, str) and target.startswith("model."):
+            inner = self.__dict__.get("model", None)
+            if inner is None:
+                raise AttributeError(f"{type(self).__name__} has no attribute `model`")
+            # Strip the leading 'model.' and delegate
+            return inner.get_parameter(target[len("model.") :])
+        # Fallback to default behavior
+        return super().get_parameter(target)
+
     def get_submodule(self, target: str):
         """
         Delegate get_submodule lookups that start with 'model' to the wrapped model.
