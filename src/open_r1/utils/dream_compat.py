@@ -10,6 +10,7 @@ class ModelCompatWrapper(nn.Module):
     """
 
     def __init__(self, model: Any, tokenizer: Optional[Any] = None):
+        super().__init__()
         self.model = model
         self.tokenizer = tokenizer
         # Expose generation_config if model has it
