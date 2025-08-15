@@ -1,8 +1,9 @@
 # src/open_r1/utils/dream_compat.py
 import torch
 from typing import Any, Optional
+import torch.nn as nn
 
-class ModelCompatWrapper:
+class ModelCompatWrapper(nn.Module):
     """
     Wrap a DreamModel (or other model that exposes dual_cache_generate/diffusion_generate)
     and provide a minimal compatibility layer expected by the trainer codebase.
