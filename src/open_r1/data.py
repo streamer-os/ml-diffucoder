@@ -42,7 +42,7 @@ def get_dataset(args: GRPOScriptArguments) -> DatasetDict:
 
             datasets_list.append(ds)
             
-       if datasets_list:
+        if datasets_list:
             combined_dataset = concatenate_datasets(datasets_list)
             combined_dataset = combined_dataset.shuffle(seed=seed)
             logger.info(f"Created dataset mixture with {len(combined_dataset)} examples")
