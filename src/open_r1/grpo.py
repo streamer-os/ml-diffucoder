@@ -15,7 +15,7 @@ from datasets import load_dataset, DatasetDict
 from transformers import set_seed
 from transformers.trainer_utils import get_last_checkpoint
 
-from .configs import GRPOConfig, GRPOScriptArguments, ModelConfig
+from .configs import GRPOConfig, GRPOScriptArguments
 from .rewards import get_reward_funcs
 from .utils.model_utils import get_model, get_tokenizer
 from .callbacks import get_callbacks
