@@ -110,6 +110,8 @@ class ModelCompatWrapper(nn.Module):
         """
         代理 gradient_checkpointing_enable 到底层模型，如果没有则抛出友好异常。
         """
+        if self.__dict__.get('_initializing', False) or self.__dict__.get('model', None) is None:
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute 'model' (model not initialized)")
         if hasattr(self.model, "gradient_checkpointing_enable"):
             return self.model.gradient_checkpointing_enable()
         raise AttributeError(f"Underlying model does not support gradient_checkpointing_enable")
