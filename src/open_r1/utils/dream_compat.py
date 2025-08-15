@@ -13,12 +13,15 @@ class ModelCompatWrapper(nn.Module):
     """
 
     def __init__(self, model: Any, tokenizer: Optional[Any] = None):
-        # Set model first to avoid __getattr__ issues
+        # Set a flag to indicate we're in initialization
+        self._initializing = True
+        
+        # Must call super().__init__() first for nn.Module
+        super().__init__()
+        
+        # Now we can safely assign the model and other attributes
         self.model = model
         self.tokenizer = tokenizer
-        
-        # Call super().__init__() after setting model
-        super().__init__()
         
         # Expose generation_config if model has it
         self.generation_config = getattr(model, "generation_config", None)
@@ -33,6 +36,9 @@ class ModelCompatWrapper(nn.Module):
                     self._name_or_path = getattr(model, '_name_or_path', 'unknown_model')
                     self.model_type = getattr(model, 'model_type', 'custom')
             self.config = MinimalConfig()
+        
+        # Clear the initialization flag
+        self._initializing = False
         
         # Initial binding of generation methods (following Dream pattern)
         try:
@@ -102,13 +108,18 @@ class ModelCompatWrapper(nn.Module):
 
     # Provide attribute passthrough for convenience (so external code can still access model.*)
     def __getattr__(self, name: str):
-        # Use hasattr to safely check if model exists, avoiding recursion
-        if not hasattr(self, 'model') or self.model is None:
+        # During initialization, just raise AttributeError for unknown attributes
+        if getattr(self, '_initializing', False):
+            raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
+        
+        # After initialization, check if we have the model
+        model_instance = getattr(self, 'model', None)
+        if model_instance is None:
             raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}' (model not initialized)")
         
         # Check if the internal model has this attribute
-        if hasattr(self.model, name):
-            return getattr(self.model, name)
+        if hasattr(model_instance, name):
+            return getattr(model_instance, name)
         
         # If the internal model doesn't have this attribute either, raise error
         raise AttributeError(f"'{type(self).__name__}' object has no attribute '{name}'")
