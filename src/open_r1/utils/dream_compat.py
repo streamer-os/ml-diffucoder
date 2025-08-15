@@ -32,6 +32,7 @@ class MinimalConfig:
     Minimal config object used when wrapped model doesn't expose a config attribute.
     Feel free to extend fields if other parts of code expect more attributes.
     """
+
     use_return_dict: bool = True
     model_type: str = "dream_compat_minimal"
     # Add fields later as needed by callers.
@@ -62,7 +63,9 @@ class ModelCompatWrapper(nn.Module):
         # Use minimal fallbacks to avoid AttributeError when other code expects these.
         try:
             if hasattr(model, "generation_config"):
-                object.__setattr__(self, "generation_config", getattr(model, "generation_config"))
+                object.__setattr__(
+                    self, "generation_config", getattr(model, "generation_config")
+                )
         except Exception:
             pass
 
@@ -82,7 +85,10 @@ class ModelCompatWrapper(nn.Module):
             self._bind_dream_methods()
         except Exception:
             # Don't fail initialization if binding fails; it may be bound later when model is set.
-            logger.debug("Initial _bind_dream_methods failed; will try again when model set.", exc_info=True)
+            logger.debug(
+                "Initial _bind_dream_methods failed; will try again when model set.",
+                exc_info=True,
+            )
 
     # -------------------------
     # Helper binding / rebind
@@ -98,16 +104,28 @@ class ModelCompatWrapper(nn.Module):
 
         # Example: if the underlying model has DreamGenerationMixin methods, expose them at wrapper-level.
         # We don't know all methods; safely copy a couple of commonly used ones if present.
-        for name in ("generate", "prepare_inputs_for_generation", "update_model_kwargs_for_generation"):
+        for name in (
+            "generate",
+            "prepare_inputs_for_generation",
+            "update_model_kwargs_for_generation",
+        ):
             if hasattr(model, name):
                 try:
                     # bind the function so calls like wrapper.generate(...) work and self points to model
                     fn = getattr(model, name)
                     # If it's a function defined on the model instance, just assign a wrapper-bound method
-                    object.__setattr__(self, name, types.MethodType(fn.__func__ if hasattr(fn, "__func__") else fn, model))
+                    object.__setattr__(
+                        self,
+                        name,
+                        types.MethodType(
+                            fn.__func__ if hasattr(fn, "__func__") else fn, model
+                        ),
+                    )
                 except Exception:
                     # best-effort; do not raise
-                    logger.debug("Could not bind %s from underlying model", name, exc_info=True)
+                    logger.debug(
+                        "Could not bind %s from underlying model", name, exc_info=True
+                    )
 
         # Mark as attempted
         object.__setattr__(self, "_dream_methods_bound", True)
@@ -129,12 +147,17 @@ class ModelCompatWrapper(nn.Module):
                 yield from model.parameters(recurse=recurse)
                 return
             except Exception:
-                logger.debug("Delegated model.parameters failed, falling back to super()", exc_info=True)
-        
+                logger.debug(
+                    "Delegated model.parameters failed, falling back to super()",
+                    exc_info=True,
+                )
+
         # Fallback to wrapper's own parameters (if any)
         yield from super().parameters(recurse=recurse)
 
-    def named_parameters(self, prefix: str = '', recurse: bool = True, remove_duplicate: bool = True) -> Iterator[Tuple[str, nn.Parameter]]:
+    def named_parameters(
+        self, prefix: str = "", recurse: bool = True, remove_duplicate: bool = True
+    ) -> Iterator[Tuple[str, nn.Parameter]]:
         """
         Delegate to wrapped model's named_parameters. Important for parameter inspection.
         """
@@ -143,14 +166,21 @@ class ModelCompatWrapper(nn.Module):
             try:
                 # Add 'model.' prefix to parameter names to maintain hierarchy
                 model_prefix = f"{prefix}model." if prefix else "model."
-                for name, param in model.named_parameters(prefix="", recurse=recurse, remove_duplicate=remove_duplicate):
+                for name, param in model.named_parameters(
+                    prefix="", recurse=recurse, remove_duplicate=remove_duplicate
+                ):
                     yield f"{model_prefix}{name}", param
                 return
             except Exception:
-                logger.debug("Delegated model.named_parameters failed, falling back to super()", exc_info=True)
-        
+                logger.debug(
+                    "Delegated model.named_parameters failed, falling back to super()",
+                    exc_info=True,
+                )
+
         # Fallback to wrapper's own named_parameters
-        yield from super().named_parameters(prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate)
+        yield from super().named_parameters(
+            prefix=prefix, recurse=recurse, remove_duplicate=remove_duplicate
+        )
 
     def children(self):
         """Delegate to wrapped model's children."""
@@ -160,8 +190,11 @@ class ModelCompatWrapper(nn.Module):
                 yield model  # yield the wrapped model as our child
                 return
             except Exception:
-                logger.debug("Delegated model.children failed, falling back to super()", exc_info=True)
-        
+                logger.debug(
+                    "Delegated model.children failed, falling back to super()",
+                    exc_info=True,
+                )
+
         yield from super().children()
 
     # -------------------------
@@ -178,14 +211,18 @@ class ModelCompatWrapper(nn.Module):
             # Handle 'model.xxx' paths by stripping 'model.' prefix
             if target.startswith("model."):
                 target = target[6:]  # Remove 'model.' prefix
-            
+
             # If the wrapped model itself implements get_parameter, prefer delegating
             if hasattr(model, "get_parameter"):
                 try:
                     return model.get_parameter(target)
                 except Exception:
                     # fall back to manual walk below
-                    logger.debug("Delegated model.get_parameter failed for %s, falling back", target, exc_info=True)
+                    logger.debug(
+                        "Delegated model.get_parameter failed for %s, falling back",
+                        target,
+                        exc_info=True,
+                    )
 
             # Manual dotted-path walk on wrapped model: e.g. "decoder.layer.0.attn.q_proj.weight"
             parts = target.split(".")
@@ -198,7 +235,12 @@ class ModelCompatWrapper(nn.Module):
                 param = getattr(obj, last)
                 return param
             except Exception as e:
-                logger.debug("Manual get_parameter walk failed for %s: %s", target, e, exc_info=True)
+                logger.debug(
+                    "Manual get_parameter walk failed for %s: %s",
+                    target,
+                    e,
+                    exc_info=True,
+                )
 
         # Fallback: try wrapper's own get_parameter (nn.Module API) to raise the usual errors
         return super().get_parameter(target)
@@ -224,7 +266,11 @@ class ModelCompatWrapper(nn.Module):
                             return model
                         return model.get_submodule(sub_target)
                     except Exception:
-                        logger.debug("model.get_submodule failed for %s, trying manual walk", sub_target, exc_info=True)
+                        logger.debug(
+                            "model.get_submodule failed for %s, trying manual walk",
+                            sub_target,
+                            exc_info=True,
+                        )
 
                 # Manual attribute walk
                 try:
@@ -235,7 +281,11 @@ class ModelCompatWrapper(nn.Module):
                         cur = getattr(cur, part)
                     return cur
                 except Exception:
-                    logger.debug("Manual walk on wrapped model failed for %s", sub_target, exc_info=True)
+                    logger.debug(
+                        "Manual walk on wrapped model failed for %s",
+                        sub_target,
+                        exc_info=True,
+                    )
 
             # If model not set, fall through to wrapper-based resolution
 
@@ -251,7 +301,9 @@ class ModelCompatWrapper(nn.Module):
                 return cur
             except Exception as e:
                 # Re-raise AttributeError consistent with nn.Module.get_submodule behaviour
-                raise AttributeError(f"{self.__class__.__name__} has no submodule {target}") from e
+                raise AttributeError(
+                    f"{self.__class__.__name__} has no submodule {target}"
+                ) from e
 
     # -------------------------
     # Attribute access / setting
@@ -277,7 +329,11 @@ class ModelCompatWrapper(nn.Module):
 
                 try:
                     if hasattr(value, "generation_config"):
-                        object.__setattr__(self, "generation_config", getattr(value, "generation_config"))
+                        object.__setattr__(
+                            self,
+                            "generation_config",
+                            getattr(value, "generation_config"),
+                        )
                 except Exception:
                     pass
 
@@ -285,7 +341,9 @@ class ModelCompatWrapper(nn.Module):
                 try:
                     self._bind_dream_methods()
                 except Exception:
-                    logger.debug("Rebinding dream methods after model set failed.", exc_info=True)
+                    logger.debug(
+                        "Rebinding dream methods after model set failed.", exc_info=True
+                    )
                 return
 
             # For other attributes, use default behaviour (keeps nn.Module behaviour intact)
@@ -296,7 +354,9 @@ class ModelCompatWrapper(nn.Module):
                 object.__setattr__(self, name, value)
             except Exception:
                 # swallow to avoid breaking callers; but log for diagnostics
-                logger.exception("Failed to set attribute %s on ModelCompatWrapper", name)
+                logger.exception(
+                    "Failed to set attribute %s on ModelCompatWrapper", name
+                )
 
     def __getattr__(self, name: str) -> Any:
         """
@@ -315,7 +375,9 @@ class ModelCompatWrapper(nn.Module):
                 logger.debug("Delegated getattr raised for %s", name, exc_info=True)
 
         # If still not found, raise AttributeError (consistent with normal behaviour)
-        raise AttributeError(f"{self.__class__.__name__} object has no attribute {name}")
+        raise AttributeError(
+            f"{self.__class__.__name__} object has no attribute {name}"
+        )
 
     # -------------------------
     # nn.Module convenience overrides (delegation)
@@ -346,7 +408,10 @@ class ModelCompatWrapper(nn.Module):
                 object.__setattr__(self, "model", model)
                 return self
             except Exception:
-                logger.debug("Delegated model.to failed; falling back to wrapper.to", exc_info=True)
+                logger.debug(
+                    "Delegated model.to failed; falling back to wrapper.to",
+                    exc_info=True,
+                )
         return super().to(*args, **kwargs)
 
     def state_dict(self, *args, **kwargs):
@@ -355,7 +420,10 @@ class ModelCompatWrapper(nn.Module):
             try:
                 return model.state_dict(*args, **kwargs)
             except Exception:
-                logger.debug("model.state_dict failed - falling back to super().state_dict", exc_info=True)
+                logger.debug(
+                    "model.state_dict failed - falling back to super().state_dict",
+                    exc_info=True,
+                )
         return super().state_dict(*args, **kwargs)
 
     def load_state_dict(self, state_dict, *args, **kwargs):
@@ -364,7 +432,10 @@ class ModelCompatWrapper(nn.Module):
             try:
                 return model.load_state_dict(state_dict, *args, **kwargs)
             except Exception:
-                logger.debug("model.load_state_dict failed - falling back to super().load_state_dict", exc_info=True)
+                logger.debug(
+                    "model.load_state_dict failed - falling back to super().load_state_dict",
+                    exc_info=True,
+                )
         return super().load_state_dict(state_dict, *args, **kwargs)
 
     def train(self, mode: bool = True):
@@ -397,5 +468,25 @@ class ModelCompatWrapper(nn.Module):
             except Exception:
                 logger.debug("Delegated model.zero_grad failed", exc_info=True)
         return super().zero_grad(set_to_none=set_to_none)
+
+    def forward(self, *args, **kwargs):
+        """
+        Delegate forward calls to the wrapped model if present. If delegation fails or no
+        wrapped model is set, fall back to the base nn.Module behavior (which will raise
+        NotImplementedError) to remain consistent with PyTorch expectations.
+        """
+        model = self.__dict__.get("model", None)
+        if model is not None:
+            try:
+                # Prefer calling the model as a callable (supports __call__/forward chaining)
+                return model(*args, **kwargs)
+            except Exception:
+                # If calling the model fails, try directly invoking its forward method
+                try:
+                    return model.forward(*args, **kwargs)
+                except Exception:
+                    logger.debug("Delegated model.forward failed", exc_info=True)
+        # Fall back to nn.Module forward which will raise NotImplementedError if not implemented
+        return super().forward(*args, **kwargs)
 
     # Add any additional delegations expected by the rest of the codebase as needed.
