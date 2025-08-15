@@ -17,7 +17,7 @@ class ModelCompatWrapper(nn.Module):
         # 必须先调用父类 nn.Module 的 __init__ 方法
         super().__init__()
         self._init_flag = True
-
+        
         # 处理从配置对象进行的初始化（为了兼容 trl 的 create_reference_model）
         if isinstance(model_or_config, PretrainedConfig):
             # 如果传入的是配置对象，则用它来创建一个新的 DreamModel 实例
@@ -25,7 +25,7 @@ class ModelCompatWrapper(nn.Module):
         else:
             # 否则，直接使用传入的模型实例
             model = model_or_config
-
+        self.add_module("model", model)
         # 现在可以安全地为 model 和其他属性赋值
         self.model = model
         self.tokenizer = tokenizer
