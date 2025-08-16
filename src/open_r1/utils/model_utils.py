@@ -66,7 +66,8 @@ def get_model(model_args, training_args):
             fp_kwargs["torch_dtype"] = torch_dtype
 
         model = DreamModel.from_pretrained(model_args.model_name_or_path, **fp_kwargs)
-        if training_args.use_cache:
+        use_cache = True
+        if use_cache:
             from model.generation_utils_block import DreamGenerationMixin
             model.diffusion_generate = types.MethodType(DreamGenerationMixin.diffusion_generate, model)
             model._sample = types.MethodType(DreamGenerationMixin._sample, model)
