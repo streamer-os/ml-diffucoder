@@ -420,23 +420,19 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 # === generation compatibility block ===
                 # 准备通用的 generation 参数，从 self.args（Trainer args）读取默认值
                 gen_kwargs = {
-                    "steps": getattr(self.args, "diffusion_steps", getattr(self.args, "steps", 256)),
-                    "temperature": getattr(self.args, "generation_temperature", 1.0),
-                    "top_p": getattr(self.args, "top_p", getattr(self.args, "generation_top_p", None)),
-                    "top_k": getattr(self.args, "top_k", getattr(self.args, "generation_top_k", None)),
-                    "block_length": getattr(self.args, "block_length", 32),
-                    "dual_cache": getattr(self.args, "dual_cache", True),
-                    "replace_position": getattr(self.args, "replace_position", True),
-                    "generation_batch_size": getattr(self.args, "generation_batch_size", 1),
-                    # 额外可能有用的名字，若 parser 里有则也会传入
-                    "alg": getattr(self.args, "alg", None),
-                    "alg_temp": getattr(self.args, "alg_temp", None),
-                    "eps": getattr(self.args, "eps", None),
-                    "do_sample": getattr(self.args, "do_sample", None),
-                    "max_length": getattr(self.args, "max_length", None),
-                    "return_dict_in_generate": True
+                    "max_new_tokens": 256,
+                    "steps": 128,
+                    "output_history": "False",
+                    "temperature": 0.0,
+                    "top_p": None,
+                    "top_k": None,
+                    "alg_temp": 0.0,
+                    "return_dict_in_generate": True,
+                    "alg": "confidence_threshold",
+                    "dual_cache": True,
+                    "use_cache": True,
+                    "threshold": 0.9
                 }
-                
                 # 过滤 None，调用兼容接口（ModelCompatWrapper 会路由到 dual_cache_generate / diffusion_generate / generate）
                 batch_prompt_completion_ids = self.model.diffusion_generate(
                     batch_prompt_ids,
