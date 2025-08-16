@@ -40,6 +40,8 @@ lr_scheduler_kwargs:
   min_lr_rate: 0.1
 num_train_epochs: 1
 output_dir: output_ljb
+use_cache: true
+dual_cache: true
 overwrite_output_dir: true
 e2b_router_url: 0.0.0.0:8000
 
