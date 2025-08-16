@@ -66,7 +66,8 @@ def get_model(model_args, training_args):
             fp_kwargs["torch_dtype"] = torch_dtype
 
         model = DreamModel.from_pretrained(model_args.model_name_or_path, **fp_kwargs)
-        if args.
+        if training_args.use_cache = True:
+            from model.
         # wrap
         wrapped = ModelCompatWrapper(model)
         return wrapped
