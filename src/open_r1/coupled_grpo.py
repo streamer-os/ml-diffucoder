@@ -407,7 +407,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
         gen_length = self.args.max_completion_length
         steps = 256
         temperature = 1.0
-        self.args.generation_batch_size = 8
+        self.args.generation_batch_size = 1
 
         with unwrap_model_for_generation(self.model_wrapped, self.accelerator) as unwrapped_model:
             generation_batch_size = self.args.generation_batch_size
