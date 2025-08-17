@@ -3,7 +3,7 @@ import logging
 import torch
 from transformers import AutoModel, AutoConfig, AutoTokenizer
 from typing import Optional
-
+import types
 logger = logging.getLogger(__name__)
 
 # keep existing helper functions above (if any) unchanged
