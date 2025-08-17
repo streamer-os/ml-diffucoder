@@ -409,6 +409,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
         with unwrap_model_for_generation(self.model_wrapped, self.accelerator) as unwrapped_model:
             generation_batch_size = self.args.generation_batch_size
             prompt_completion_ids_all = []
+
             # Process in batches
             for i in range(0, prompt_ids.size(0), generation_batch_size):
                 end_idx = min(i + generation_batch_size, prompt_ids.size(0))
@@ -430,12 +431,23 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     "use_cache": True,
                     "threshold": 0.9
                 }
-                # 过滤 None，调用兼容接口（ModelCompatWrapper 会路由到 dual_cache_generate / diffusion_generate / generate）
-                batch_prompt_completion_ids = self.model.diffusion_generate(
-                    batch_prompt_ids,
-                    attention_mask=batch_prompt_mask,
-                    **{k: v for k, v in gen_kwargs.items() if v is not None}
-                )
+                try:
+                    if hasattr(unwrapped_model, 'gradient_checkpointing_disable'):
+                        unwrapped_model.gradient_checkpointing_disable()
+                except Exception:
+                    pass
+                try:
+                    batch_prompt_completion_ids = unwrapped_model.diffusion_generate(
+                        batch_prompt_ids,
+                        attention_mask=batch_prompt_mask,
+                        **{k: v for k, v in gen_kwargs.items() if v is not None}
+                    )
+                finally:
+                    try:
+                        if hasattr(unwrapped_model, 'gradient_checkpointing_enable'):
+                            unwrapped_model.gradient_checkpointing_enable()
+                    except Exception:
+                        pass
                 # === end block ===
 
                 # import pdb; pdb.set_trace();
