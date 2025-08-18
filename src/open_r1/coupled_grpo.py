@@ -379,8 +379,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
             # In evaluation, we don't reuse completions across multiple updates, so we don't need to buffer inputs.
             inputs = self._generate_and_score_completions(inputs)
         return inputs
-        
-    @torch.inference_mode()
+
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -432,23 +431,13 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     "use_cache": True,
                     "threshold": 0.9
                 }
-                try:
-                    if hasattr(unwrapped_model, 'gradient_checkpointing_disable'):
-                        unwrapped_model.gradient_checkpointing_disable()
-                except Exception:
-                    pass
-                try:
-                    batch_prompt_completion_ids = unwrapped_model.diffusion_generate(
+
+                batch_prompt_completion_ids = unwrapped_model.diffusion_generate(
                         batch_prompt_ids,
                         attention_mask=batch_prompt_mask,
                         **{k: v for k, v in gen_kwargs.items() if v is not None}
-                    )
-                finally:
-                    try:
-                        if hasattr(unwrapped_model, 'gradient_checkpointing_enable'):
-                            unwrapped_model.gradient_checkpointing_enable()
-                    except Exception:
-                        pass
+                )
+
                 # === end block ===
 
                 # import pdb; pdb.set_trace();
