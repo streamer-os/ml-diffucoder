@@ -380,7 +380,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
             inputs = self._generate_and_score_completions(inputs)
         return inputs
         
-@torch.inference_mode()
+    @torch.inference_mode()
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
