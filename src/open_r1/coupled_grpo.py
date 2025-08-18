@@ -379,7 +379,8 @@ class DiffuGRPOTrainer(GRPOTrainer):
             # In evaluation, we don't reuse completions across multiple updates, so we don't need to buffer inputs.
             inputs = self._generate_and_score_completions(inputs)
         return inputs
-
+        
+@torch.inference_mode()
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
