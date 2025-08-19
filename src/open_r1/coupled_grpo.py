@@ -28,6 +28,8 @@ from trl.trainer.utils import (
 from trl.trainer.grpo_trainer import nanmin, nanmax
 import wandb
 import random
+import gc
+
 if is_peft_available():
     from peft import PeftConfig, get_peft_model
 # What we call a reward function is a callable that takes a list of prompts and completions and returns a list of
@@ -178,6 +180,95 @@ class DiffuGRPOTrainer(GRPOTrainer):
             peft_config=peft_config,
         )
 
+    def _move_generation_output_to_cpu(self, gen_out):
+        """
+        Move generation outputs (and nested tensors) to CPU to free GPU memory quickly.
+        Supports objects with attribute 'sequences' (the Dream/Diffusion generate output),
+        plain tensors, lists/tuples/dicts containing tensors, and dataclasses with tensor fields.
+        """
+        if gen_out is None:
+            return None
+
+        # If it's a huggingface-like ModelOutput with 'sequences'
+        try:
+            if hasattr(gen_out, "sequences"):
+                gen_out.sequences = gen_out.sequences.detach().cpu()
+                # try to free other big fields if present
+                if hasattr(gen_out, "history") and gen_out.history is not None:
+                    # history may be tuple of floats; ignore or move if tensors
+                    try:
+                        gen_out.history = tuple(h.detach().cpu() if isinstance(h, torch.Tensor) else h for h in gen_out.history)
+                    except Exception:
+                        pass
+                return gen_out
+        except Exception:
+            pass
+
+        # If it's a tensor
+        if isinstance(gen_out, torch.Tensor):
+            return gen_out.detach().cpu()
+
+        # Recurse for common containers
+        if isinstance(gen_out, (list, tuple)):
+            return type(gen_out)(self._move_generation_output_to_cpu(x) for x in gen_out)
+        if isinstance(gen_out, dict):
+            return {k: self._move_generation_output_to_cpu(v) for k, v in gen_out.items()}
+
+        # Fallback: return original
+        return gen_out
+
+    def _safe_diffusion_generate(self, unwrapped_model, *args, **gen_kwargs):
+        """
+        Run diffusion_generate in a memory-friendly, checkpoint-compatible way:
+         - switch model to eval + no_grad so that use_cache can be honored
+         - temporarily disable gradient_checkpointing on the underlying model if present
+         - ensure outputs are moved to CPU asap to free GPU memory
+         - restore original training/checkpointing state afterwards
+
+        Returns the generation output (with sequences moved to CPU).
+        """
+        # Save original states
+        orig_training = unwrapped_model.training
+        # Some models may expose gradient_checkpointing as attribute; handle robustly.
+        had_gc_attr = hasattr(unwrapped_model, "gradient_checkpointing")
+        orig_gc = getattr(unwrapped_model, "gradient_checkpointing", None)
+
+        try:
+            # Put model in eval and disable grads
+            unwrapped_model.eval()
+            # Temporarily disable gradient checkpointing so that caching (use_cache) is allowed.
+            if had_gc_attr:
+                try:
+                    # set attribute to False (model uses this flag in forward to decide)
+                    unwrapped_model.gradient_checkpointing = False
+                except Exception:
+                    pass
+
+            with torch.no_grad():
+                gen_out = unwrapped_model.diffusion_generate(*args, **gen_kwargs)
+
+            # Move big tensors to CPU immediately to reduce GPU memory pressure
+            gen_out = self._move_generation_output_to_cpu(gen_out)
+
+            # free up leftover GPU memory
+            try:
+                torch.cuda.empty_cache()
+                gc.collect()
+            except Exception:
+                pass
+            return gen_out
+
+        finally:
+            # Restore gradient checkpointing flag
+            if had_gc_attr and orig_gc is not None:
+                try:
+                    unwrapped_model.gradient_checkpointing = orig_gc
+                except Exception:
+                    pass
+            # Restore training/eval state
+            if orig_training:
+                unwrapped_model.train()
+    
     @profiling_decorator
     def compute_loss(self, model, inputs, return_outputs=False, num_items_in_batch=None):
         if return_outputs:
@@ -432,16 +523,21 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     "threshold": 0.9
                 }
 
-                batch_prompt_completion_ids = unwrapped_model.diffusion_generate(
-                        batch_prompt_ids,
-                        attention_mask=batch_prompt_mask,
-                        **{k: v for k, v in gen_kwargs.items() if v is not None}
-                )
+                try:
+                    safe_gen_out = self._safe_diffusion_generate(unwrapped_model, batch_prompt_ids, attention_mask=batch_prompt_mask, **{k: v for k, v in gen_kwargs.items() if v is not None})
+                except Exception as e:
+                    # Fallback: try generating without use_cache if something goes wrong
+                    logger.warning(f"safe generation failed with {e}, retrying with use_cache=False")
+                    gen_kwargs["use_cache"] = False
+                    with torch.no_grad():
+                        safe_gen_out = unwrapped_model.diffusion_generate(batch_prompt_ids, attention_mask=batch_prompt_mask, **{k: v for k, v in gen_kwargs.items() if v is not None})
+                    # Move outputs to CPU
+                    safe_gen_out = self._move_generation_output_to_cpu(safe_gen_out)
 
                 # === end block ===
 
                 # import pdb; pdb.set_trace();
-                prompt_completion_ids_all.append(batch_prompt_completion_ids.sequences)
+                prompt_completion_ids_all.append(safe_gen_out.sequences)
 
                 del batch_prompt_ids, batch_prompt_mask, batch_prompt_completion_ids
                 torch.cuda.empty_cache()
