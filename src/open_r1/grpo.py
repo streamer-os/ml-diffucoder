@@ -67,20 +67,6 @@ def main(script_args, training_args, model_args):
     transformers.utils.logging.enable_default_handler()
     transformers.utils.logging.enable_explicit_format()
 
-    # Log on each process a small summary
-    logger.warning(
-        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
-        + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
-    )
-    # compute and log model parameter counts robustly
-    total_params, trainable_params = _count_model_parameters(model)
-    if total_params is None:
-        logger.info(f"Model parameters: unable to compute parameter counts for model {type(model)}")
-    else:
-        logger.info(f"Model parameters: total={total_params:,}, trainable={trainable_params:,}")
-    logger.info(f"Script parameters {script_args}")
-    logger.info(f"Training parameters {training_args}")
-
     # Check for last checkpoint
     last_checkpoint = None
     if os.path.isdir(training_args.output_dir):
@@ -110,6 +96,20 @@ def main(script_args, training_args, model_args):
     logger.info("*** Loading model ***")
     model = get_model(model_args, training_args)
 
+    # Log on each process a small summary
+    logger.warning(
+        f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
+        + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
+    )
+    # compute and log model parameter counts robustly
+    total_params, trainable_params = _count_model_parameters(model)
+    if total_params is None:
+        logger.info(f"Model parameters: unable to compute parameter counts for model {type(model)}")
+    else:
+        logger.info(f"Model parameters: total={total_params:,}, trainable={trainable_params:,}")
+    logger.info(f"Script parameters {script_args}")
+    logger.info(f"Training parameters {training_args}")
+    
     # Get reward functions from the registry
     reward_funcs = get_reward_funcs(script_args)
 
