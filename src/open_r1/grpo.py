@@ -25,6 +25,28 @@ from .coupled_grpo import DiffuGRPOTrainer
 
 logger = logging.getLogger(__name__)
 
+def _count_model_parameters(model) -> tuple[int | None, int | None]:
+    """
+    Robustly count parameters of a possibly-wrapping model.
+
+    Returns (total_params, trainable_params) or (None, None) on error.
+    """
+    try:
+        # Some wrappers implement parameters() as a generator that can be consumed,
+        # so convert to list to ensure accurate counts.
+        params = list(model.parameters())
+        total = sum(p.numel() for p in params)
+        trainable = sum(p.numel() for p in params if p.requires_grad)
+        return total, trainable
+    except Exception:
+        # Best-effort fallback using named_parameters (some wrappers expose that)
+        try:
+            params = [p for _, p in model.named_parameters()]
+            total = sum(p.numel() for p in params)
+            trainable = sum(p.numel() for p in params if p.requires_grad)
+            return total, trainable
+        except Exception:
+            return None, None
 
 def main(script_args, training_args, model_args):
     # Set seed for reproducibility
@@ -50,7 +72,12 @@ def main(script_args, training_args, model_args):
         f"Process rank: {training_args.local_rank}, device: {training_args.device}, n_gpu: {training_args.n_gpu}"
         + f" distributed training: {bool(training_args.local_rank != -1)}, 16-bits training: {training_args.fp16}"
     )
-    logger.info(f"Model parameters {model_args}")
+    # compute and log model parameter counts robustly
+    total_params, trainable_params = _count_model_parameters(model)
+    if total_params is None:
+        logger.info(f"Model parameters: unable to compute parameter counts for model {type(model)}")
+    else:
+        logger.info(f"Model parameters: total={total_params:,}, trainable={trainable_params:,}")
     logger.info(f"Script parameters {script_args}")
     logger.info(f"Training parameters {training_args}")
 
