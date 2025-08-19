@@ -539,7 +539,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 # import pdb; pdb.set_trace();
                 prompt_completion_ids_all.append(safe_gen_out.sequences)
 
-                del batch_prompt_ids, batch_prompt_mask, batch_prompt_completion_ids
+                del batch_prompt_ids, batch_prompt_mask, safe_gen_out
                 torch.cuda.empty_cache()
 
             prompt_completion_ids = torch.cat(prompt_completion_ids_all, dim=0)
