@@ -379,77 +379,87 @@ class DiffuGRPOTrainer(GRPOTrainer):
 
 
     def _get_per_token_logps(self, model, input_ids, logits_to_keep, mask_seeds):
-        """
-        Calculate per-token log probabilities.
-        """
-        # Validate input dimensions
+        """计算每个token的对数概率，增强内存管理"""
+        # 验证输入维度
         if input_ids.dim() != 3:
             raise ValueError(f"Expected input_ids to have 3 dimensions, got {input_ids.dim()}")
         
         num_iterations, batch_size, seq_len = input_ids.size()
         device = input_ids.device
         
-        # Ensure logits_to_keep is valid
+        # 确保logits_to_keep有效
         logits_to_keep = min(logits_to_keep, seq_len)
         per_token_logps = torch.zeros(num_iterations, batch_size, logits_to_keep, device=device)
-
-        # Verify mask_seeds length
+    
+        # 验证mask_seeds长度
         if len(mask_seeds) != num_iterations:
             raise ValueError(f"Expected mask_seeds length to be {num_iterations}, got {len(mask_seeds)}")
-
+    
         prompt_length = seq_len - logits_to_keep
         prompt_index = torch.zeros(seq_len, dtype=torch.bool, device=device)
-        prompt_index[:prompt_length] = True  # Mark prompt tokens as True
-
-        # applying masks
-        all_perturbed_seqs = []
-        all_weighted = []
-        all_expanded_inputs = []
-        all_completion_masks = []
-        for iter_idx, mask_seed in enumerate(mask_seeds):
-            expanded_input = input_ids[iter_idx]  # [batch_size, seq_len]
-            perturbed_seq, t_weights, completion_mask = self.forward_process(
-                expanded_input, prompt_index, self.processing_class.mask_token_id, seed=mask_seed, accumulate=num_iterations > 1
-            )
-            all_perturbed_seqs.extend(perturbed_seq)
-            all_weighted.extend(t_weights) # [num_iterations * 3] list
-            all_expanded_inputs.append(expanded_input)
-            all_completion_masks.append(completion_mask)
-
-        # Concatenate all iterations into a single batch
-        perturbed_seq = torch.cat(all_perturbed_seqs, dim=0)  # [num_iterations * 3 * batch_size, seq_len]
-        completion_mask_seq = torch.cat(all_completion_masks, dim=0)  # [num_iterations * batch_size, seq_len]
-        expanded_input = torch.cat(all_expanded_inputs, dim=0)  # [num_iterations * batch_size, seq_len]
-        all_weights_t = torch.tensor(all_weighted, device=device) # [num_iterations * 3]
-
-        # Get model predictions for the combined batch
-        logits = self.get_logits(
-            model, perturbed_seq
-        )  # [num_iterations * 3 * batch_size, seq_len, vocab_size]
-
-        # Calculate cross-entropy loss for completion tokens only
-        completion_logits = logits[
-            :, -logits_to_keep:, :
-        ]  # [num_iterations * 3 * batch_size, logits_to_keep, vocab_size]
-        completion_targets = expanded_input[
-            :, -logits_to_keep:
-        ]  # [num_iterations * batch_size, logits_to_keep]
-        completion_loss_mask = completion_mask_seq[
-            :, -logits_to_keep:
-        ]  # [num_iterations * 3 * batch_size, logits_to_keep]
-        # import pdb; pdb.set_trace();
-        # Compute log probabilities using selective_log_softmax
-        per_token_logps = selective_log_softmax(
-            completion_logits, 
-            completion_targets, 
-            all_weights_t, 
-            completion_loss_mask
-        ).view(num_iterations, batch_size, logits_to_keep).permute(1, 0, 2)
-
-        # Clean up memory
-        del perturbed_seq, logits, all_perturbed_seqs, all_expanded_inputs
-        torch.cuda.empty_cache()
-        per_token_logps = per_token_logps.to(torch.float32)
+        prompt_index[:prompt_length] = True
+    
+        try:
+            # 分批处理以减少内存使用
+            batch_size_per_chunk = min(batch_size, 4)  # 限制每个chunk的大小
+            
+            for batch_start in range(0, batch_size, batch_size_per_chunk):
+                batch_end = min(batch_start + batch_size_per_chunk, batch_size)
+                
+                # 应用掩码 - 只处理当前batch chunk
+                all_perturbed_seqs = []
+                all_weighted = []
+                all_expanded_inputs = []
+                all_completion_masks = []
+                
+                for iter_idx, mask_seed in enumerate(mask_seeds):
+                    expanded_input = input_ids[iter_idx, batch_start:batch_end]  # 当前chunk
+                    perturbed_seq, t_weights, completion_mask = self.forward_process(
+                        expanded_input, prompt_index, self.processing_class.mask_token_id, 
+                        seed=mask_seed, accumulate=num_iterations > 1
+                    )
+                    all_perturbed_seqs.extend(perturbed_seq)
+                    all_weighted.extend(t_weights)
+                    all_expanded_inputs.append(expanded_input)
+                    all_completion_masks.append(completion_mask)
+    
+                # 连接所有迭代到单个批次
+                perturbed_seq = torch.cat(all_perturbed_seqs, dim=0)
+                completion_mask_seq = torch.cat(all_completion_masks, dim=0)
+                expanded_input = torch.cat(all_expanded_inputs, dim=0)
+                all_weights_t = torch.tensor(all_weighted, device=device)
+    
+                # 获取模型预测
+                with torch.cuda.amp.autocast():
+                    logits = self.get_logits(model, perturbed_seq)
+    
+                # 计算完成token的交叉熵损失
+                completion_logits = logits[:, -logits_to_keep:, :]
+                completion_targets = expanded_input[:, -logits_to_keep:]
+                completion_loss_mask = completion_mask_seq[:, -logits_to_keep:]
+    
+                # 使用selective_log_softmax计算对数概率
+                chunk_per_token_logps = selective_log_softmax(
+                    completion_logits, 
+                    completion_targets, 
+                    all_weights_t, 
+                    completion_loss_mask
+                ).view(num_iterations, batch_end - batch_start, logits_to_keep)
+                
+                # 存储结果
+                per_token_logps[:, batch_start:batch_end, :] = chunk_per_token_logps
+                
+                # 立即清理内存
+                del perturbed_seq, logits, completion_logits, chunk_per_token_logps
+                del all_perturbed_seqs, all_expanded_inputs, completion_mask_seq, expanded_input
+                torch.cuda.empty_cache()
+    
+        except Exception as e:
+            # 确保在异常情况下也清理内存
+            torch.cuda.empty_cache()
+            raise e
+    
+        per_token_logps = per_token_logps.to(torch.float32).permute(1, 0, 2)
         return per_token_logps
 
     def _prepare_inputs(
@@ -459,7 +469,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
         if mode == "train":
             generate_every = self.args.gradient_accumulation_steps * self.num_iterations
             if self._step % generate_every == 0 or self._buffered_inputs is None:
-                # self._buffered_inputs=None can occur when resuming from a checkpoint
+                # 修复：确保传入正确的batch
                 accumulated_local_batch = self._generate_and_score_completions(accumulated_local_batch)
                 self._buffered_inputs = split_tensor_dict(
                     accumulated_local_batch, self.args.gradient_accumulation_steps
@@ -467,51 +477,72 @@ class DiffuGRPOTrainer(GRPOTrainer):
             inputs = self._buffered_inputs[self._step % self.args.gradient_accumulation_steps]
             self._step += 1
         else:
-            # In evaluation, we don't reuse completions across multiple updates, so we don't need to buffer inputs.
-            inputs = self._generate_and_score_completions(inputs)
+            # 修复：在评估模式下应该使用传入的batch
+            inputs = self._generate_and_score_completions(accumulated_local_batch)
         return inputs
 
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
         device = self.accelerator.device
-
+    
         prompts = [x["prompt"] for x in inputs]
         prompts_text = [
             maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs
         ]
-        prompt_inputs = self.processing_class(
-            text=prompts_text,
-            return_tensors="pt",
-            padding=True,
-            padding_side="left",
-            add_special_tokens=False,
-        )
-        prompt_inputs = Trainer._prepare_inputs(self, prompt_inputs)
-        prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
-
+        
+        # 分批处理prompt编码以避免内存峰值
+        batch_size = len(prompts_text)
+        encoding_batch_size = min(batch_size, 8)
+        
+        all_prompt_ids = []
+        all_prompt_masks = []
+        
+        for i in range(0, batch_size, encoding_batch_size):
+            end_idx = min(i + encoding_batch_size, batch_size)
+            batch_prompts = prompts_text[i:end_idx]
+            
+            prompt_inputs = self.processing_class(
+                text=batch_prompts,
+                return_tensors="pt",
+                padding=True,
+                padding_side="left",
+                add_special_tokens=False,
+            )
+            prompt_inputs = Trainer._prepare_inputs(self, prompt_inputs)
+            
+            all_prompt_ids.append(prompt_inputs["input_ids"])
+            all_prompt_masks.append(prompt_inputs["attention_mask"])
+        
+        # 合并所有批次
+        prompt_ids = torch.cat(all_prompt_ids, dim=0)
+        prompt_mask = torch.cat(all_prompt_masks, dim=0)
+        
+        # 清理临时变量
+        del all_prompt_ids, all_prompt_masks
+        torch.cuda.empty_cache()
+    
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
-
-        # Configuration for the diffusion generation
-        self.args.generation_batch_size = 1
-
+    
+        # 生成配置 - 减小批次大小以节省内存
+        self.args.generation_batch_size = min(1, batch_size)
+    
         with unwrap_model_for_generation(self.model_wrapped, self.accelerator) as unwrapped_model:
             generation_batch_size = self.args.generation_batch_size
             prompt_completion_ids_all = []
-
-            # Process in batches
+    
+            # 分批处理生成
             for i in range(0, prompt_ids.size(0), generation_batch_size):
                 end_idx = min(i + generation_batch_size, prompt_ids.size(0))
                 batch_prompt_ids = prompt_ids[i:end_idx]
                 batch_prompt_mask = prompt_mask[i:end_idx]
-                # === generation compatibility block ===
-                # 准备通用的 generation 参数，从 self.args（Trainer args）读取默认值
+                
                 gen_kwargs = {
                     "max_new_tokens": 256,
                     "steps": 128,
-                    "output_history": "False",
+                    "output_history": False,  # 改为False减少内存使用
                     "temperature": 0.0,
                     "top_p": None,
                     "top_k": None,
@@ -522,34 +553,42 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     "use_cache": True,
                     "threshold": 0.9
                 }
-
+    
                 try:
-                    safe_gen_out = self._safe_diffusion_generate(unwrapped_model, batch_prompt_ids, attention_mask=batch_prompt_mask, **{k: v for k, v in gen_kwargs.items() if v is not None})
+                    safe_gen_out = self._safe_diffusion_generate(
+                        unwrapped_model, batch_prompt_ids, 
+                        attention_mask=batch_prompt_mask, 
+                        **{k: v for k, v in gen_kwargs.items() if v is not None}
+                    )
                 except Exception as e:
-                    # Fallback: try generating without use_cache if something goes wrong
-                    logger.warning(f"safe generation failed with {e}, retrying with use_cache=False")
+                    # 降级处理：禁用缓存重试
+                    print(f"Generation failed with cache, retrying without cache: {e}")
                     gen_kwargs["use_cache"] = False
+                    gen_kwargs["dual_cache"] = False
+                    
                     with torch.no_grad():
-                        safe_gen_out = unwrapped_model.diffusion_generate(batch_prompt_ids, attention_mask=batch_prompt_mask, **{k: v for k, v in gen_kwargs.items() if v is not None})
-                    # Move outputs to CPU
+                        safe_gen_out = unwrapped_model.diffusion_generate(
+                            batch_prompt_ids, attention_mask=batch_prompt_mask,
+                            **{k: v for k, v in gen_kwargs.items() if v is not None}
+                        )
                     safe_gen_out = self._move_generation_output_to_cpu(safe_gen_out)
-
-                # === end block ===
-
-                # import pdb; pdb.set_trace();
+    
                 prompt_completion_ids_all.append(safe_gen_out.sequences)
-
+                
+                # 立即清理
                 del batch_prompt_ids, batch_prompt_mask, safe_gen_out
                 torch.cuda.empty_cache()
-
+    
             prompt_completion_ids = torch.cat(prompt_completion_ids_all, dim=0)
-
+            del prompt_completion_ids_all
+            torch.cuda.empty_cache()
+        
         # Compute prompt length and extract completion ids
         prompt_length = prompt_ids.size(1)
         prompt_ids = prompt_completion_ids[:, :prompt_length]
         completion_ids = prompt_completion_ids[:, prompt_length:]
-
-        # Mask everything after the first EOS token
+    
+        # 处理EOS token掩码
         eos_token = '<|im_end|>'
         eos_token_id = self.processing_class.encode(eos_token)[0]
         is_eos = completion_ids == eos_token_id
@@ -557,22 +596,21 @@ class DiffuGRPOTrainer(GRPOTrainer):
         eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
         sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
         completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
-        logits_to_keep = completion_ids.size(
-            1
-        )  # we only need to compute the logits for the completion tokens
+        logits_to_keep = completion_ids.size(1)
+    
+        # 掩码种子设置
         self.args.random_masking = True
         if self.args.random_masking:
-            # use random seeds for every iterations in GRPO iterations
             mask_seeds = torch.randint(0, 2**12, (self.num_iterations,), device=device).tolist()
         else:
-            # use fixed seeds for every iterations in GRPO iterations
             mask_seeds = [42] * self.num_iterations
-
+    
+        # 计算对数概率
         all_old_per_token_logps = []
         all_ref_per_token_logps = []
+        
         with torch.no_grad():
             if self.num_iterations > 1:
-                # repeat prompt completion ids self.num_iterations times
                 prompt_completion_ids_expanded = prompt_completion_ids.unsqueeze(0).expand(
                     self.num_iterations, -1, -1
                 )
@@ -580,14 +618,15 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     self.model, prompt_completion_ids_expanded, logits_to_keep, mask_seeds
                 )
                 all_old_per_token_logps = old_per_token_logps
+                del prompt_completion_ids_expanded  # 立即释放
             else:
                 old_per_token_logps = None
-
-            if self.beta == 0.0:
-                ref_per_token_logps = None
-            else:
+    
+            if self.beta != 0.0:
+                prompt_completion_ids_expanded = prompt_completion_ids.unsqueeze(0).expand(
+                    self.num_iterations, -1, -1
+                )
                 if self.ref_model is not None:
-                    print("Using reference model")
                     ref_per_token_logps = self._get_per_token_logps(
                         self.ref_model, prompt_completion_ids_expanded, logits_to_keep, mask_seeds
                     )
@@ -597,6 +636,12 @@ class DiffuGRPOTrainer(GRPOTrainer):
                             self.model, prompt_completion_ids_expanded, logits_to_keep, mask_seeds
                         )
                 all_ref_per_token_logps = ref_per_token_logps
+                del prompt_completion_ids_expanded  # 立即释放
+            else:
+                ref_per_token_logps = None
+    
+        # 强制垃圾回收
+        torch.cuda.empty_cache()
 
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
         if is_conversational(inputs[0]):
