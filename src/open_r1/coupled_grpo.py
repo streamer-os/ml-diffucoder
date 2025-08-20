@@ -481,6 +481,43 @@ class DiffuGRPOTrainer(GRPOTrainer):
             inputs = self._generate_and_score_completions(accumulated_local_batch)
         return inputs
 
+    def _move_generation_output_to_cpu(self, gen_out):
+        """
+        Move generation outputs (and nested tensors) to CPU to free GPU memory quickly.
+        BUT keep sequences on GPU if they will be used immediately for further processing.
+        """
+        if gen_out is None:
+            return None
+    
+        # If it's a huggingface-like ModelOutput with 'sequences'
+        try:
+            if hasattr(gen_out, "sequences"):
+                # DON'T move sequences to CPU immediately - keep them on GPU for downstream processing
+                # gen_out.sequences = gen_out.sequences.detach().cpu()  # 注释掉这行
+                gen_out.sequences = gen_out.sequences.detach()  # 只detach，保持在GPU上
+                
+                # Move other fields to CPU to save memory
+                if hasattr(gen_out, "history") and gen_out.history is not None:
+                    try:
+                        gen_out.history = tuple(h.detach().cpu() if isinstance(h, torch.Tensor) else h for h in gen_out.history)
+                    except Exception:
+                        pass
+                return gen_out
+        except Exception:
+            pass
+    
+        # If it's a tensor, keep on GPU if it's sequences-like
+        if isinstance(gen_out, torch.Tensor):
+            return gen_out.detach()  # 保持在原设备上
+    
+        # Recurse for common containers
+        if isinstance(gen_out, (list, tuple)):
+            return type(gen_out)(self._move_generation_output_to_cpu(x) for x in gen_out)
+        if isinstance(gen_out, dict):
+            return {k: self._move_generation_output_to_cpu(v) for k, v in gen_out.items()}
+    
+        return gen_out
+    
     def _generate_and_score_completions(
         self, inputs: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
@@ -490,50 +527,28 @@ class DiffuGRPOTrainer(GRPOTrainer):
         prompts_text = [
             maybe_apply_chat_template(example, self.processing_class)["prompt"] for example in inputs
         ]
-        
-        # 分批处理prompt编码以避免内存峰值
-        batch_size = len(prompts_text)
-        encoding_batch_size = min(batch_size, 8)
-        
-        all_prompt_ids = []
-        all_prompt_masks = []
-        
-        for i in range(0, batch_size, encoding_batch_size):
-            end_idx = min(i + encoding_batch_size, batch_size)
-            batch_prompts = prompts_text[i:end_idx]
-            
-            prompt_inputs = self.processing_class(
-                text=batch_prompts,
-                return_tensors="pt",
-                padding=True,
-                padding_side="left",
-                add_special_tokens=False,
-            )
-            prompt_inputs = Trainer._prepare_inputs(self, prompt_inputs)
-            
-            all_prompt_ids.append(prompt_inputs["input_ids"])
-            all_prompt_masks.append(prompt_inputs["attention_mask"])
-        
-        # 合并所有批次
-        prompt_ids = torch.cat(all_prompt_ids, dim=0)
-        prompt_mask = torch.cat(all_prompt_masks, dim=0)
-        
-        # 清理临时变量
-        del all_prompt_ids, all_prompt_masks
-        torch.cuda.empty_cache()
+        prompt_inputs = self.processing_class(
+            text=prompts_text,
+            return_tensors="pt",
+            padding=True,
+            padding_side="left",
+            add_special_tokens=False,
+        )
+        prompt_inputs = Trainer._prepare_inputs(self, prompt_inputs)
+        prompt_ids, prompt_mask = prompt_inputs["input_ids"], prompt_inputs["attention_mask"]
     
         if self.max_prompt_length is not None:
             prompt_ids = prompt_ids[:, -self.max_prompt_length :]
             prompt_mask = prompt_mask[:, -self.max_prompt_length :]
     
-        # 生成配置 - 减小批次大小以节省内存
-        self.args.generation_batch_size = min(1, batch_size)
+        # Configuration for the diffusion generation
+        self.args.generation_batch_size = 1
     
         with unwrap_model_for_generation(self.model_wrapped, self.accelerator) as unwrapped_model:
             generation_batch_size = self.args.generation_batch_size
             prompt_completion_ids_all = []
     
-            # 分批处理生成
+            # Process in batches
             for i in range(0, prompt_ids.size(0), generation_batch_size):
                 end_idx = min(i + generation_batch_size, prompt_ids.size(0))
                 batch_prompt_ids = prompt_ids[i:end_idx]
@@ -542,7 +557,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 gen_kwargs = {
                     "max_new_tokens": 256,
                     "steps": 128,
-                    "output_history": False,  # 改为False减少内存使用
+                    "output_history": "False",
                     "temperature": 0.0,
                     "top_p": None,
                     "top_k": None,
@@ -561,72 +576,102 @@ class DiffuGRPOTrainer(GRPOTrainer):
                         **{k: v for k, v in gen_kwargs.items() if v is not None}
                     )
                 except Exception as e:
-                    # 降级处理：禁用缓存重试
-                    print(f"Generation failed with cache, retrying without cache: {e}")
+                    # Fallback: try generating without use_cache if something goes wrong
+                    print(f"safe generation failed with {e}, retrying with use_cache=False")
                     gen_kwargs["use_cache"] = False
                     gen_kwargs["dual_cache"] = False
-                    
                     with torch.no_grad():
                         safe_gen_out = unwrapped_model.diffusion_generate(
-                            batch_prompt_ids, attention_mask=batch_prompt_mask,
+                            batch_prompt_ids, attention_mask=batch_prompt_mask, 
                             **{k: v for k, v in gen_kwargs.items() if v is not None}
                         )
+                    # Move outputs but keep sequences on GPU
                     safe_gen_out = self._move_generation_output_to_cpu(safe_gen_out)
     
-                prompt_completion_ids_all.append(safe_gen_out.sequences)
+                # 确保sequences在正确的设备上
+                if hasattr(safe_gen_out, 'sequences'):
+                    sequences = safe_gen_out.sequences
+                else:
+                    sequences = safe_gen_out
                 
-                # 立即清理
+                # 确保sequences在GPU上
+                if not sequences.is_cuda:
+                    sequences = sequences.to(device)
+                    
+                prompt_completion_ids_all.append(sequences)
+    
                 del batch_prompt_ids, batch_prompt_mask, safe_gen_out
                 torch.cuda.empty_cache()
     
             prompt_completion_ids = torch.cat(prompt_completion_ids_all, dim=0)
-            del prompt_completion_ids_all
-            torch.cuda.empty_cache()
-        
+    
+        # 确保所有张量都在同一设备上
+        prompt_completion_ids = prompt_completion_ids.to(device)
+    
         # Compute prompt length and extract completion ids
         prompt_length = prompt_ids.size(1)
-        prompt_ids = prompt_completion_ids[:, :prompt_length]
-        completion_ids = prompt_completion_ids[:, prompt_length:]
+        prompt_ids = prompt_completion_ids[:, :prompt_length].to(device)
+        completion_ids = prompt_completion_ids[:, prompt_length:].to(device)
     
-        # 处理EOS token掩码
+        # Mask everything after the first EOS token
         eos_token = '<|im_end|>'
         eos_token_id = self.processing_class.encode(eos_token)[0]
-        is_eos = completion_ids == eos_token_id
-        eos_idx = torch.full((is_eos.size(0),), is_eos.size(1), dtype=torch.long, device=device)
-        eos_idx[is_eos.any(dim=1)] = is_eos.int().argmax(dim=1)[is_eos.any(dim=1)]
-        sequence_indices = torch.arange(is_eos.size(1), device=device).expand(is_eos.size(0), -1)
-        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int()
+        is_eos = (completion_ids == eos_token_id).to(device)  # 确保在正确设备上
+        
+        # 创建eos_idx张量，确保在正确设备上
+        eos_idx = torch.full(
+            (is_eos.size(0),), is_eos.size(1), 
+            dtype=torch.long, device=device  # 明确指定设备
+        )
+        
+        # 检查是否有EOS token
+        has_eos = is_eos.any(dim=1)
+        if has_eos.any():
+            eos_positions = is_eos.int().argmax(dim=1)
+            eos_idx[has_eos] = eos_positions[has_eos]
+        
+        # 创建序列索引，确保在正确设备上
+        sequence_indices = torch.arange(
+            is_eos.size(1), device=device  # 明确指定设备
+        ).expand(is_eos.size(0), -1)
+        
+        completion_mask = (sequence_indices <= eos_idx.unsqueeze(1)).int().to(device)
+        
         logits_to_keep = completion_ids.size(1)
-    
-        # 掩码种子设置
+        
+        # 确保random_masking设置
         self.args.random_masking = True
         if self.args.random_masking:
-            mask_seeds = torch.randint(0, 2**12, (self.num_iterations,), device=device).tolist()
+            # 使用CPU生成随机数，然后转换为列表
+            mask_seeds = torch.randint(0, 2**12, (self.num_iterations,)).tolist()
         else:
             mask_seeds = [42] * self.num_iterations
     
-        # 计算对数概率
         all_old_per_token_logps = []
         all_ref_per_token_logps = []
         
         with torch.no_grad():
             if self.num_iterations > 1:
+                # 确保扩展的张量在正确设备上
                 prompt_completion_ids_expanded = prompt_completion_ids.unsqueeze(0).expand(
                     self.num_iterations, -1, -1
-                )
+                ).to(device)
+                
                 old_per_token_logps = self._get_per_token_logps(
                     self.model, prompt_completion_ids_expanded, logits_to_keep, mask_seeds
                 )
                 all_old_per_token_logps = old_per_token_logps
-                del prompt_completion_ids_expanded  # 立即释放
             else:
                 old_per_token_logps = None
     
             if self.beta != 0.0:
-                prompt_completion_ids_expanded = prompt_completion_ids.unsqueeze(0).expand(
-                    self.num_iterations, -1, -1
-                )
+                if self.num_iterations == 1:
+                    prompt_completion_ids_expanded = prompt_completion_ids.unsqueeze(0).expand(
+                        self.num_iterations, -1, -1
+                    ).to(device)
+                
                 if self.ref_model is not None:
+                    print("Using reference model")
                     ref_per_token_logps = self._get_per_token_logps(
                         self.ref_model, prompt_completion_ids_expanded, logits_to_keep, mask_seeds
                     )
@@ -636,14 +681,12 @@ class DiffuGRPOTrainer(GRPOTrainer):
                             self.model, prompt_completion_ids_expanded, logits_to_keep, mask_seeds
                         )
                 all_ref_per_token_logps = ref_per_token_logps
-                del prompt_completion_ids_expanded  # 立即释放
             else:
                 ref_per_token_logps = None
     
-        # 强制垃圾回收
-        torch.cuda.empty_cache()
-
+        # 解码completion文本
         completions_text = self.processing_class.batch_decode(completion_ids, skip_special_tokens=True)
+        
         if is_conversational(inputs[0]):
             completions = []
             for prompt, completion in zip(prompts, completions_text):
@@ -651,7 +694,8 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 completions.append([{"role": "assistant", "content": bootstrap + completion}])
         else:
             completions = completions_text
-
+    
+        # 计算奖励
         rewards_per_func = torch.zeros(len(prompts), len(self.reward_funcs), device=device)
         for i, (reward_func, reward_processing_class) in enumerate(
             zip(self.reward_funcs, self.reward_processing_classes)
@@ -661,8 +705,6 @@ class DiffuGRPOTrainer(GRPOTrainer):
             else:
                 reward_func_name = reward_func.__name__
             with profiling_context(self, reward_func_name):
-
-                # Repeat all input columns (but "prompt" and "completion") to match the number of generations
                 keys = [key for key in inputs[0] if key not in ["prompt", "completion"]]
                 reward_kwargs = {key: [example[key] for example in inputs] for key in keys}
                 output_reward_func = reward_func(
@@ -672,15 +714,14 @@ class DiffuGRPOTrainer(GRPOTrainer):
                     run_name=self.args.output_dir,
                     **reward_kwargs,
                 )
-
-                # Clip rewards to valid range
+    
                 output_reward_func = [
                     reward if reward is not None else torch.nan for reward in output_reward_func
                 ]
-
+    
                 rewards_per_func[:, i] = torch.tensor(output_reward_func, dtype=torch.float32, device=device)
-
-        # If all reward functions return None for a given row, issue a detailed warning
+    
+        # 检查NaN奖励
         if torch.isnan(rewards_per_func).all(dim=1).any():
             nan_row_idx = torch.isnan(rewards_per_func).all(dim=1).nonzero(as_tuple=True)[0][0]
             row_reward_kwargs = {key: value[nan_row_idx] for key, value in reward_kwargs.items()}
@@ -690,63 +731,60 @@ class DiffuGRPOTrainer(GRPOTrainer):
                 f"All reward functions returned None for the following kwargs: {row_reward_kwargs}. "
                 "Please ensure that at least one reward function returns a valid reward."
             )
-
+    
         rewards_per_func = gather(rewards_per_func)
         rewards = (rewards_per_func * self.reward_weights.to(device).unsqueeze(0)).nansum(dim=1)
-
-        # Compute grouped-wise rewards
+    
+        # 计算分组奖励
         leave_one_out = True
         if not leave_one_out:
             mean_grouped_rewards = rewards.view(-1, self.num_generations).mean(dim=1)
             std_grouped_rewards = rewards.view(-1, self.num_generations).std(dim=1)
-
-            # Normalize the rewards to compute the advantages
             mean_grouped_rewards = mean_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
             std_grouped_rewards = std_grouped_rewards.repeat_interleave(self.num_generations, dim=0)
             advantages = rewards - mean_grouped_rewards
             if self.scale_rewards:
                 advantages = advantages / (std_grouped_rewards + 1e-4)
         else:
-            rewards_grouped = rewards.view(-1, self.num_generations)           # (batch, k)
-            sum_group = rewards_grouped.sum(dim=1, keepdim=True)               # (batch, 1)
-            baseline  = (sum_group - rewards_grouped) / (self.num_generations - 1)
-
-            advantages = (rewards_grouped - baseline).view(-1)                 # (batch*k,)
-            std_grouped_rewards = rewards_grouped.std(dim=1, keepdim=True)         # (batch, 1)
+            rewards_grouped = rewards.view(-1, self.num_generations)
+            sum_group = rewards_grouped.sum(dim=1, keepdim=True)
+            baseline = (sum_group - rewards_grouped) / (self.num_generations - 1)
+            advantages = (rewards_grouped - baseline).view(-1)
+            std_grouped_rewards = rewards_grouped.std(dim=1, keepdim=True)
             std_grouped_rewards = std_grouped_rewards.repeat_interleave(
                 self.num_generations, dim=1
-            ).view(-1)   
+            ).view(-1)
             if self.scale_rewards:
                 advantages = advantages / (std_grouped_rewards + 1e-4)
-
-
-        # Count prompts with zero std deviation
-        zero_std_count = (std_grouped_rewards < 1e-6).sum().item()  # Using a small threshold
+    
+        # 计算零标准差比例
+        zero_std_count = (std_grouped_rewards < 1e-6).sum().item()
         total_prompts = std_grouped_rewards.size(0)
         zero_std_ratio = zero_std_count / total_prompts if total_prompts > 0 else 0.0
-
+    
+        # 获取当前进程的切片
         process_slice = slice(
             self.accelerator.process_index * len(prompts),
             (self.accelerator.process_index + 1) * len(prompts),
         )
         advantages = advantages[process_slice]
-
-        # Log the metrics
+    
+        # 记录指标
         mode = "eval" if self.control.should_evaluate else "train"
-
+    
         completion_length = self.accelerator.gather_for_metrics(completion_mask.sum(1)).float().mean().item()
         self._metrics[mode]["completion_length"].append(completion_length)
         self._metrics[mode]["zero_std_ratio"].append(zero_std_ratio)
-
-        # Calculate mean reward per function, but only for samples where the function was applied
+    
+        # 计算每个奖励函数的平均奖励
         for i, reward_func in enumerate(self.reward_funcs):
             if isinstance(reward_func, nn.Module):
                 reward_func_name = reward_func.config._name_or_path.split("/")[-1]
             else:
                 reward_func_name = reward_func.__name__
-            # Only calculate mean for samples where this reward function was applied (non-NaN values)
             mean_rewards = torch.nanmean(rewards_per_func[:, i]).item()
             self._metrics[mode][f"rewards/{reward_func_name}"].append(mean_rewards)
+        
         self._metrics[mode]["reward"].append(rewards.mean().item())
         self._metrics[mode]["reward_std"].append(std_grouped_rewards.mean().item())
         
@@ -754,7 +792,7 @@ class DiffuGRPOTrainer(GRPOTrainer):
         self._textual_logs["completion"].extend(gather_object(completions_text))
         for i, name in enumerate(self.reward_func_names):
             self._textual_logs["rewards"][name].extend(rewards_per_func[:, i].tolist())
-
+    
         return {
             "prompt_ids": prompt_ids,
             "prompt_mask": prompt_mask,
@@ -763,5 +801,5 @@ class DiffuGRPOTrainer(GRPOTrainer):
             "old_per_token_logps": all_old_per_token_logps,
             "ref_per_token_logps": all_ref_per_token_logps,
             "advantages": advantages,
-            "mask_seeds": mask_seeds,  # Store all mask seeds for consistent mask patterns
+            "mask_seeds": mask_seeds,
         }
