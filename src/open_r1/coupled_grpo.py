@@ -343,31 +343,77 @@ class DiffuGRPOTrainer(GRPOTrainer):
         return loss
 
     def forward_process(self, batch, prompt_index, mask_id, seed=None, accumulate=False):
+        """
+        Apply masking to the batch with proper dimension handling.
+        
+        Args:
+            batch: Input tensor of shape [batch_size, seq_len]
+            prompt_index: Boolean tensor of shape [seq_len] indicating prompt tokens
+            mask_id: Token ID to use for masking
+            seed: Random seed for reproducibility
+            accumulate: Whether this is part of gradient accumulation
+            
+        Returns:
+            noisy_batch: List of 3 masked versions
+            weights: List of weights for each version
+            completion_mask: Boolean mask indicating which tokens were masked
+        """
         set_seed(seed)
         b, l = batch.shape
+        
+        # Validate prompt_index dimensions
+        if prompt_index.dim() != 1 or prompt_index.size(0) != l:
+            raise ValueError(f"prompt_index should have shape [seq_len={l}], got {prompt_index.shape}")
+        
         noisy_batch = []
-        # generate a random number between 0.1 and 0.9
+        
+        # Generate a random number between 0.2 and 0.8
         mask_ratio = random.uniform(0.2, 0.8)
         t_p = torch.ones(b, device=batch.device) * mask_ratio
-        # Create a random matrix to decide whether each prompt token is masked
+        
+        # Create a random matrix to decide whether each completion token is masked
         if accumulate:
-            random_matrix = torch.rand((b//self.args.gradient_accumulation_steps, l), device=batch.device)
-            random_matrix = torch.cat([random_matrix] * self.args.gradient_accumulation_steps, dim=0)
+            # For gradient accumulation, create consistent patterns across accumulation steps
+            base_batch_size = b // self.args.gradient_accumulation_steps
+            if base_batch_size == 0:
+                # Fallback if batch size is smaller than gradient accumulation steps
+                random_matrix = torch.rand((b, l), device=batch.device)
+            else:
+                # Create pattern for base batch size and repeat
+                base_random_matrix = torch.rand((base_batch_size, l), device=batch.device)
+                random_matrix = torch.cat([base_random_matrix] * self.args.gradient_accumulation_steps, dim=0)
+                # Trim to exact batch size if needed
+                random_matrix = random_matrix[:b]
         else:
             random_matrix = torch.rand((b, l), device=batch.device)
-
-        # 1. always mask completion tokens
-        is_mask = ~prompt_index
+        
+        # Validate dimensions before operations
+        assert random_matrix.shape == (b, l), f"random_matrix shape {random_matrix.shape} != batch shape {(b, l)}"
+        assert t_p.shape == (b,), f"t_p shape {t_p.shape} != (batch_size,) = ({b},)"
+        assert prompt_index.shape == (l,), f"prompt_index shape {prompt_index.shape} != (seq_len,) = ({l},)"
+        
+        # Expand prompt_index to match batch dimensions: [seq_len] -> [batch_size, seq_len]
+        prompt_index_expanded = prompt_index.unsqueeze(0).expand(b, -1)
+        
+        # 1. Always mask completion tokens (baseline)
+        is_mask = ~prompt_index_expanded
         noisy_batch.append(torch.where(is_mask, mask_id, batch))
-        # 2. mask completion tokens with probability t_p
-        is_mask = ~prompt_index & (random_matrix < t_p.unsqueeze(1))
-        completion_mask = is_mask
+        
+        # 2. Mask completion tokens with probability t_p
+        # t_p: [batch_size] -> [batch_size, 1] -> [batch_size, seq_len]
+        t_p_expanded = t_p.unsqueeze(1).expand(-1, l)
+        is_mask = ~prompt_index_expanded & (random_matrix < t_p_expanded)
+        completion_mask = is_mask  # This will be returned
         noisy_batch.append(torch.where(is_mask, mask_id, batch))
-        # 3. mask completion tokens reversely
-        is_mask = ~prompt_index & (random_matrix > t_p.unsqueeze(1))
+        
+        # 3. Mask completion tokens reversely (with probability 1-t_p)
+        is_mask = ~prompt_index_expanded & (random_matrix > t_p_expanded)
         noisy_batch.append(torch.where(is_mask, mask_id, batch))
-
-        return noisy_batch, [1, 1/mask_ratio, 1/(1-mask_ratio)], completion_mask
+        
+        # Calculate weights based on mask ratio
+        weights = [1.0, 1.0/mask_ratio, 1.0/(1.0-mask_ratio)]
+        
+        return noisy_batch, weights, completion_mask
     
     def get_logits(self, model, batch):
         with torch.amp.autocast('cuda', dtype=torch.bfloat16):
@@ -379,89 +425,111 @@ class DiffuGRPOTrainer(GRPOTrainer):
 
 
     def _get_per_token_logps(self, model, input_ids, logits_to_keep, mask_seeds):
-        """计算每个token的对数概率，增强内存管理"""
-        # 验证输入维度
+        """
+        Calculate per-token log probabilities with improved error handling.
+        """
+        # Validate input dimensions
         if input_ids.dim() != 3:
             raise ValueError(f"Expected input_ids to have 3 dimensions, got {input_ids.dim()}")
         
         num_iterations, batch_size, seq_len = input_ids.size()
         device = input_ids.device
         
-        # 确保logits_to_keep有效
+        # Validate batch_size > 0
+        if batch_size == 0:
+            raise ValueError("Batch size cannot be 0")
+        
+        # Ensure logits_to_keep is valid
         logits_to_keep = min(logits_to_keep, seq_len)
         per_token_logps = torch.zeros(num_iterations, batch_size, logits_to_keep, device=device)
     
-        # 验证mask_seeds长度
+        # Verify mask_seeds length
         if len(mask_seeds) != num_iterations:
             raise ValueError(f"Expected mask_seeds length to be {num_iterations}, got {len(mask_seeds)}")
     
         prompt_length = seq_len - logits_to_keep
         prompt_index = torch.zeros(seq_len, dtype=torch.bool, device=device)
-        prompt_index[:prompt_length] = True
+        prompt_index[:prompt_length] = True  # Mark prompt tokens as True
     
         try:
-            # 分批处理以减少内存使用
-            batch_size_per_chunk = min(batch_size, 4)  # 限制每个chunk的大小
+            # Applying masks
+            all_perturbed_seqs = []
+            all_weighted = []
+            all_expanded_inputs = []
+            all_completion_masks = []
             
-            for batch_start in range(0, batch_size, batch_size_per_chunk):
-                batch_end = min(batch_start + batch_size_per_chunk, batch_size)
+            for iter_idx, mask_seed in enumerate(mask_seeds):
+                expanded_input = input_ids[iter_idx]  # [batch_size, seq_len]
                 
-                # 应用掩码 - 只处理当前batch chunk
-                all_perturbed_seqs = []
-                all_weighted = []
-                all_expanded_inputs = []
-                all_completion_masks = []
+                # Validate expanded_input dimensions
+                if expanded_input.size(0) != batch_size or expanded_input.size(1) != seq_len:
+                    raise ValueError(f"expanded_input shape {expanded_input.shape} doesn't match expected ({batch_size}, {seq_len})")
                 
-                for iter_idx, mask_seed in enumerate(mask_seeds):
-                    expanded_input = input_ids[iter_idx, batch_start:batch_end]  # 当前chunk
+                try:
                     perturbed_seq, t_weights, completion_mask = self.forward_process(
                         expanded_input, prompt_index, self.processing_class.mask_token_id, 
                         seed=mask_seed, accumulate=num_iterations > 1
                     )
-                    all_perturbed_seqs.extend(perturbed_seq)
-                    all_weighted.extend(t_weights)
-                    all_expanded_inputs.append(expanded_input)
-                    all_completion_masks.append(completion_mask)
-    
-                # 连接所有迭代到单个批次
-                perturbed_seq = torch.cat(all_perturbed_seqs, dim=0)
-                completion_mask_seq = torch.cat(all_completion_masks, dim=0)
-                expanded_input = torch.cat(all_expanded_inputs, dim=0)
-                all_weights_t = torch.tensor(all_weighted, device=device)
-    
-                # 获取模型预测
-                with torch.cuda.amp.autocast():
-                    logits = self.get_logits(model, perturbed_seq)
-    
-                # 计算完成token的交叉熵损失
-                completion_logits = logits[:, -logits_to_keep:, :]
-                completion_targets = expanded_input[:, -logits_to_keep:]
-                completion_loss_mask = completion_mask_seq[:, -logits_to_keep:]
-    
-                # 使用selective_log_softmax计算对数概率
-                chunk_per_token_logps = selective_log_softmax(
-                    completion_logits, 
-                    completion_targets, 
-                    all_weights_t, 
-                    completion_loss_mask
-                ).view(num_iterations, batch_end - batch_start, logits_to_keep)
+                except Exception as e:
+                    print(f"Error in forward_process for iter {iter_idx}: {e}")
+                    print(f"expanded_input shape: {expanded_input.shape}")
+                    print(f"prompt_index shape: {prompt_index.shape}")
+                    print(f"batch_size: {batch_size}, seq_len: {seq_len}")
+                    raise e
                 
-                # 存储结果
-                per_token_logps[:, batch_start:batch_end, :] = chunk_per_token_logps
-                
-                # 立即清理内存
-                del perturbed_seq, logits, completion_logits, chunk_per_token_logps
-                del all_perturbed_seqs, all_expanded_inputs, completion_mask_seq, expanded_input
-                torch.cuda.empty_cache()
+                all_perturbed_seqs.extend(perturbed_seq)
+                all_weighted.extend(t_weights)
+                all_expanded_inputs.append(expanded_input)
+                all_completion_masks.append(completion_mask)
+    
+            # Concatenate all iterations into a single batch
+            perturbed_seq = torch.cat(all_perturbed_seqs, dim=0)  # [num_iterations * 3 * batch_size, seq_len]
+            completion_mask_seq = torch.cat(all_completion_masks, dim=0)  # [num_iterations * batch_size, seq_len]
+            expanded_input = torch.cat(all_expanded_inputs, dim=0)  # [num_iterations * batch_size, seq_len]
+            all_weights_t = torch.tensor(all_weighted, device=device)  # [num_iterations * 3]
+    
+            # Validate concatenated tensors
+            expected_perturbed_size = (num_iterations * 3 * batch_size, seq_len)
+            expected_mask_size = (num_iterations * batch_size, seq_len)
+            expected_input_size = (num_iterations * batch_size, seq_len)
+            
+            if perturbed_seq.shape != expected_perturbed_size:
+                raise ValueError(f"perturbed_seq shape {perturbed_seq.shape} != expected {expected_perturbed_size}")
+            if completion_mask_seq.shape != expected_mask_size:
+                raise ValueError(f"completion_mask_seq shape {completion_mask_seq.shape} != expected {expected_mask_size}")
+            if expanded_input.shape != expected_input_size:
+                raise ValueError(f"expanded_input shape {expanded_input.shape} != expected {expected_input_size}")
+    
+            # Get model predictions for the combined batch
+            logits = self.get_logits(model, perturbed_seq)  # [num_iterations * 3 * batch_size, seq_len, vocab_size]
+    
+            # Calculate cross-entropy loss for completion tokens only
+            completion_logits = logits[:, -logits_to_keep:, :]  # [num_iterations * 3 * batch_size, logits_to_keep, vocab_size]
+            completion_targets = expanded_input[:, -logits_to_keep:]  # [num_iterations * batch_size, logits_to_keep]
+            completion_loss_mask = completion_mask_seq[:, -logits_to_keep:]  # [num_iterations * batch_size, logits_to_keep]
+    
+            # Compute log probabilities using selective_log_softmax
+            per_token_logps = selective_log_softmax(
+                completion_logits, 
+                completion_targets, 
+                all_weights_t, 
+                completion_loss_mask
+            ).view(num_iterations, batch_size, logits_to_keep).permute(1, 0, 2)
+    
+            # Clean up memory
+            del perturbed_seq, logits, all_perturbed_seqs, all_expanded_inputs
+            torch.cuda.empty_cache()
+            per_token_logps = per_token_logps.to(torch.float32)
+            return per_token_logps
     
         except Exception as e:
-            # 确保在异常情况下也清理内存
+            # Clean up memory even in case of error
             torch.cuda.empty_cache()
+            print(f"Error in _get_per_token_logps: {e}")
+            print(f"input_ids shape: {input_ids.shape}")
+            print(f"batch_size: {batch_size}, seq_len: {seq_len}, num_iterations: {num_iterations}")
             raise e
-    
-        per_token_logps = per_token_logps.to(torch.float32).permute(1, 0, 2)
-        return per_token_logps
-
+            
     def _prepare_inputs(
         self, accumulated_local_batch: dict[str, Union[torch.Tensor, Any]]
     ) -> dict[str, Union[torch.Tensor, Any]]:
