@@ -697,7 +697,7 @@ class DreamBaseModel(DreamPreTrainedModel):
                 logger.warning_once(
                     "`use_cache=True` is incompatible with gradient checkpointing. Setting `use_cache=False`..."
                 )
-                use_cache = False
+                #use_cache = False
 
         if inputs_embeds is None:
             inputs_embeds = self.embed_tokens(input_ids)
